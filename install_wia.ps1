@@ -180,6 +180,9 @@ Set-ItemProperty $classKey "WiaVersion"     "2.0"
 Set-ItemProperty $classKey "SubClass"       "StillImage"
 Set-ItemProperty "$classKey\DeviceData" "Server"  "local"
 Set-ItemProperty "$classKey\DeviceData" "TwainDS" ""
+Set-ItemProperty "$classKey\DeviceData" "USDClass" $CLSID
+Set-ItemProperty "$classKey\DeviceData" "WiaVersion" "2.0"
+Set-ItemProperty "$classKey\DeviceData" "SubClass" "StillImage"
 Write-Host "    Class key: $idxStr"
 
 # Enum\ROOT\IMAGE
@@ -200,8 +203,8 @@ Set-ItemProperty $enumKey "ClassGUID"     $classGUID
 Set-ItemProperty $enumKey "Class"         "Image"
 Set-ItemProperty $enumKey "DeviceDesc"    "VirtualScanner ADS-4700W"
 Set-ItemProperty $enumKey "Manufacturer"  "VirtualScanner"
-Set-ItemProperty $enumKey "HardwareID"    "ROOT\IMAGE\VirtualScannerWIA"
-Set-ItemProperty $enumKey "Service"       "StillImage"
+Set-ItemProperty $enumKey "HardwareID"    -Type MultiString -Value @("ROOT\IMAGE\VirtualScannerWIA")
+Set-ItemProperty $enumKey "Service"       "stisvc"
 Set-ItemProperty $enumKey "ConfigFlags"   -Value 0 -Type DWord
 Set-ItemProperty $enumKey "Capabilities"  -Value 0 -Type DWord
 Set-ItemProperty $enumKey "Driver"        "$classGUID\$idxStr"
@@ -213,10 +216,42 @@ Set-ItemProperty "$enumKey\DeviceData" "HardwareConfig" -Value 1 -Type DWord
 Set-ItemProperty "$enumKey\DeviceData" "DeviceType"     -Value 1 -Type DWord
 Write-Host "    Enum key: ROOT\IMAGE\$devStr"
 
+
+# Also write to StillImage\Devices with instance hierarchy expected by STI/WIA
+Write-Host "[6] Escrevendo StillImage\Devices..."
+$siBase = "HKLM:\SYSTEM\CurrentControlSet\Control\StillImage\Devices"
+New-Item $siBase -Force -ErrorAction SilentlyContinue | Out-Null
+$siRoot = "$siBase\ROOT"
+$siImage = "$siRoot\IMAGE"
+$siKey  = "$siImage\$devStr"
+New-Item $siRoot  -Force -ErrorAction SilentlyContinue | Out-Null
+New-Item $siImage -Force -ErrorAction SilentlyContinue | Out-Null
+Remove-Item $siKey -Recurse -Force -ErrorAction SilentlyContinue
+New-Item $siKey              -Force | Out-Null
+New-Item "$siKey\DeviceData" -Force | Out-Null
+Set-ItemProperty $siKey "ClassGUID"      $classGUID
+Set-ItemProperty $siKey "DriverDesc"     "VirtualScanner ADS-4700W"
+Set-ItemProperty $siKey "Manufacturer"   "VirtualScanner"
+Set-ItemProperty $siKey "HardwareID"     -Type MultiString -Value @("ROOT\IMAGE\VirtualScannerWIA")
+Set-ItemProperty $siKey "Service"        "stisvc"
+Set-ItemProperty $siKey "USDClass"       $CLSID
+Set-ItemProperty $siKey "HardwareConfig" -Value 1 -Type DWord
+Set-ItemProperty $siKey "DeviceType"     -Value 1 -Type DWord
+Set-ItemProperty $siKey "Server"         "local"
+Set-ItemProperty $siKey "SubClass"       "StillImage"
+Set-ItemProperty $siKey "WiaVersion"     "2.0"
+Set-ItemProperty "$siKey\DeviceData" "Server"         "local"
+Set-ItemProperty "$siKey\DeviceData" "USDClass"       $CLSID
+Set-ItemProperty "$siKey\DeviceData" "HardwareConfig" -Value 1 -Type DWord
+Set-ItemProperty "$siKey\DeviceData" "DeviceType"     -Value 1 -Type DWord
+Set-ItemProperty "$siKey\DeviceData" "SubClass"       "StillImage"
+Set-ItemProperty "$siKey\DeviceData" "WiaVersion"     "2.0"
+Write-Host "    StillImage key: ROOT\IMAGE\$devStr"
+
 # -----------------------------------------------------------------------
 # Start WIA and force re-enumeration
 # -----------------------------------------------------------------------
-Write-Host "[6] Iniciando WIA..."
+Write-Host "[7] Iniciando WIA..."
 Start-Service stisvc -ErrorAction SilentlyContinue
 Start-Sleep 4
 
@@ -224,13 +259,13 @@ $svc = Get-Service stisvc -ErrorAction SilentlyContinue
 Write-Host "    WIA Service: $(if($svc){$svc.Status}else{'N/A'})"
 
 # Force WIA to re-scan devices by restarting once more
-Write-Host "[7] Forcando re-enumeracao..."
+Write-Host "[8] Forcando re-enumeracao..."
 Stop-Service stisvc -Force -ErrorAction SilentlyContinue
 Start-Sleep 2
 Start-Service stisvc -ErrorAction SilentlyContinue
 Start-Sleep 4
 
-Write-Host "[8] Dispositivos WIA:"
+Write-Host "[9] Dispositivos WIA:"
 try {
     $wia = New-Object -ComObject WIA.DeviceManager
     $n   = $wia.DeviceInfos.Count

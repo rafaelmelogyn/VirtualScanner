@@ -67,7 +67,11 @@ Copie arquivos JPG, PNG, BMP, TIF para:
 C:\VirtualScanner\Queue\
 ```
 
-As imagens são lidas em **ordem alfabética**.
+Compatibilidade adicional: se existir uma pasta legada `C:\VirtulScanner\Queue\`,
+a fila também será lida automaticamente para facilitar testes e migração.
+
+As imagens são lidas em **ordem alfabética** e o driver recarrega a fila automaticamente
+quando novas imagens entram após o início da sessão de digitalização.
 
 ### 3. Escanear
 
@@ -102,11 +106,36 @@ C:\VirtualScanner\Logs\vscanner.log
 Restart-Service stisvc
 ```
 
+**Log mostra apenas `DllGetClassObject` / `CreateInstance` / `QueryInterface` (sem `drvInitializeWia`):**
+Isso indica que o COM está carregando a DLL, mas a sessão WIA não está completando a negociação do mini-driver.
+Use esta versão que corrige identidade COM de `IUnknown` no `QueryInterface` e marca o item raiz como `WiaItemTypeFolder`.
+
+**Scanner WIA instalado mas não listado (Total: 0):**
+Execute estas verificações no PowerShell (Admin):
+```powershell
+Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\StillImage\Devices\ROOT\IMAGE\0000" -ErrorAction SilentlyContinue
+Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Enum\ROOT\IMAGE\0000" -ErrorAction SilentlyContinue
+Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Enum\ROOT\IMAGE\0000\DeviceData" -ErrorAction SilentlyContinue
+```
+Se não existir `StillImage\Devices\ROOT\IMAGE\0000`, rode novamente `install_wia.ps1` atualizado.
+
+Se continuar com `Total: 0`, verifique no log o `riid` pedido em `CreateInstance`/`QI`.
+Se aparecer `QI NOINTERFACE`, envie o GUID para ajustar suporte de interface no driver.
+
+Após instalar, confirme no log chamadas de `drvInitializeWia` e `InitRootProperties`; se só houver `CreateInstance`, a enumeração não completou.
+
 **Scanner não aparece no TWAIN:**
 Verifique se os 4 registros foram criados:
 ```powershell
 Get-Item "HKLM:\SOFTWARE\WOW6432Node\TWAIN\VirtualScanner ADS-4700W"
 ```
+
+**Build WIA mostra erro mas ainda diz "Build OK":**
+Use a versão atualizada de `build_wia_only.ps1` (ela remove DLL antiga e falha corretamente no `cl`).
+Se necessário, apague manualmente `wia\VirtualScannerWIA.dll` antes de compilar.
+
+**Erro `WIA_DIP_STI_GEN_CAPS: undeclared identifier`:**
+Seu Windows SDK é mais antigo e não expõe essa constante. O código atual já possui fallback com `#ifdef`, então basta atualizar para a versão mais recente do repositório e recompilar.
 
 **Erro de compilação "wiaguid.lib not found":**
 Instale o Windows SDK (incluso no Visual Studio Installer como componente opcional

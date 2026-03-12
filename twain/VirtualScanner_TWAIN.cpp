@@ -58,6 +58,19 @@ static void ResetState()
     VSLog(L"Queue reloaded: %zu files", g_queue.size());
 }
 
+static void RefreshQueueIfNeeded()
+{
+    if (g_idx >= (int)g_queue.size()) {
+        std::vector<std::wstring> updated = VS_ScanQueue();
+        if (!updated.empty()) {
+            g_queue.swap(updated);
+            g_idx = 0;
+            VSLog(L"Queue refreshed dynamically: %zu files", g_queue.size());
+        }
+    }
+    g_ready = g_idx < (int)g_queue.size();
+}
+
 // Build a TW_ONEVALUE container on the heap (caller owns memory via GlobalAlloc)
 static TW_HANDLE MakeOneVal(TW_UINT16 type, TW_UINT32 item)
 {
@@ -85,6 +98,7 @@ static TW_UINT16 Control(TW_UINT32 DAT, TW_UINT16 MSG, TW_MEMREF pData)
     if (DAT == DAT_STATUS && MSG == MSG_GET) {
         pTW_STATUS p = (pTW_STATUS)pData;
         p->ConditionCode = g_cc; p->Reserved = 0;
+        g_cc = TWCC_SUCCESS;
         return TWRC_SUCCESS;
     }
 
@@ -123,6 +137,7 @@ static TW_UINT16 Control(TW_UINT32 DAT, TW_UINT16 MSG, TW_MEMREF pData)
     //--- DAT_EVENT ----------------------------------------------------------
     if (DAT == DAT_EVENT && MSG == MSG_PROCESSEVENT) {
         pTW_EVENT pEv = (pTW_EVENT)pData;
+        RefreshQueueIfNeeded();
         if (g_ready && !g_readySent) {
             pEv->TWMessage = MSG_XFERREADY;
             g_readySent    = true;
@@ -171,6 +186,13 @@ static TW_UINT16 Control(TW_UINT32 DAT, TW_UINT16 MSG, TW_MEMREF pData)
         if (MSG == MSG_GET || MSG == MSG_GETCURRENT || MSG == MSG_GETDEFAULT ||
             MSG == MSG_QUERYSUPPORT)
         {
+            if (MSG == MSG_QUERYSUPPORT) {
+                cap->hContainer = MakeOneVal(TWTY_UINT32,
+                    TWQC_GET | TWQC_GETDEFAULT | TWQC_GETCURRENT | TWQC_SET | TWQC_RESET);
+                cap->ConType = TWON_ONEVALUE;
+                return TWRC_SUCCESS;
+            }
+
             switch (cap->Cap) {
             case CAP_XFERCOUNT:
                 cap->hContainer = MakeOneVal(TWTY_INT16, (TW_UINT32)(TW_INT16)-1);
@@ -336,12 +358,16 @@ static TW_UINT16 Image(TW_UINT32 DAT, TW_UINT16 MSG, TW_MEMREF pData)
 
     //--- DAT_IMAGENATIVEXFER ------------------------------------------------
     if (DAT == DAT_IMAGENATIVEXFER && MSG == MSG_GET) {
+        RefreshQueueIfNeeded();
         VSLog(L"IMAGENATIVEXFER idx=%d / %zu", g_idx, g_queue.size());
         if (g_idx >= (int)g_queue.size()) {
-            g_cc = TWCC_NODS; return TWRC_FAILURE;
+            g_cc = TWCC_NODS;
+            return TWRC_FAILURE;
         }
         HGLOBAL hDib = VS_LoadAsDIB(g_queue[g_idx]);
         if (!hDib) { g_cc = TWCC_OPERATIONERROR; return TWRC_FAILURE; }
+
+        g_cc = TWCC_SUCCESS;
 
         *(TW_HANDLE*)pData = hDib;
         VSLog(L"Delivered image %d: %s", g_idx, g_queue[g_idx].c_str());

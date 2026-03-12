@@ -121,8 +121,8 @@ Set-ItemProperty $enumKey "ClassGUID"     $classGUID
 Set-ItemProperty $enumKey "Class"         "Image"
 Set-ItemProperty $enumKey "DeviceDesc"    "VirtualScanner ADS-4700W"
 Set-ItemProperty $enumKey "Manufacturer"  "VirtualScanner"
-Set-ItemProperty $enumKey "HardwareID"    "ROOT\IMAGE\VirtualScannerWIA"
-Set-ItemProperty $enumKey "Service"       "StillImage"
+Set-ItemProperty $enumKey "HardwareID"    -Type MultiString -Value @("ROOT\IMAGE\VirtualScannerWIA")
+Set-ItemProperty $enumKey "Service"       "stisvc"
 Set-ItemProperty $enumKey "ConfigFlags"   -Value 0 -Type DWord
 Set-ItemProperty $enumKey "Capabilities"  -Value 0 -Type DWord
 Set-ItemProperty $enumKey "Driver"        "$classGUID\$idxStr"
@@ -137,27 +137,36 @@ Set-ItemProperty "$enumKey\DeviceData" "SubClass"       "StillImage"
 
 Write-Host "    OK: ROOT\IMAGE\$devStr -> Class $idxStr"
 
-# Also write to StillImage\Devices which some versions of stisvc use
+# Also write to StillImage\Devices with instance hierarchy expected by STI/WIA
 Write-Host "[6] Escrevendo StillImage\Devices..."
 $siBase = "HKLM:\SYSTEM\CurrentControlSet\Control\StillImage\Devices"
 New-Item $siBase -Force -ErrorAction SilentlyContinue | Out-Null
-$siKey  = "$siBase\VirtualScanner_ADS4700W"
+$siRoot = "$siBase\ROOT"
+$siImage = "$siRoot\IMAGE"
+$siKey  = "$siImage\$devStr"
+New-Item $siRoot  -Force -ErrorAction SilentlyContinue | Out-Null
+New-Item $siImage -Force -ErrorAction SilentlyContinue | Out-Null
 Remove-Item $siKey -Recurse -Force -ErrorAction SilentlyContinue
 New-Item $siKey              -Force | Out-Null
 New-Item "$siKey\DeviceData" -Force | Out-Null
-Set-ItemProperty $siKey "ClassGUID"     $classGUID
-Set-ItemProperty $siKey "DriverDesc"    "VirtualScanner ADS-4700W"
-Set-ItemProperty $siKey "Manufacturer"  "VirtualScanner"
-Set-ItemProperty $siKey "USDClass"      $CLSID
+Set-ItemProperty $siKey "ClassGUID"      $classGUID
+Set-ItemProperty $siKey "DriverDesc"     "VirtualScanner ADS-4700W"
+Set-ItemProperty $siKey "Manufacturer"   "VirtualScanner"
+Set-ItemProperty $siKey "HardwareID"     -Type MultiString -Value @("ROOT\IMAGE\VirtualScannerWIA")
+Set-ItemProperty $siKey "Service"        "stisvc"
+Set-ItemProperty $siKey "USDClass"       $CLSID
 Set-ItemProperty $siKey "HardwareConfig" -Value 1 -Type DWord
-Set-ItemProperty $siKey "DeviceType"    -Value 1 -Type DWord
-Set-ItemProperty $siKey "Server"        "local"
-Set-ItemProperty $siKey "SubClass"      "StillImage"
-Set-ItemProperty $siKey "WiaVersion"    "2.0"
-Set-ItemProperty "$siKey\DeviceData" "Server"        "local"
-Set-ItemProperty "$siKey\DeviceData" "USDClass"      $CLSID
+Set-ItemProperty $siKey "DeviceType"     -Value 1 -Type DWord
+Set-ItemProperty $siKey "Server"         "local"
+Set-ItemProperty $siKey "SubClass"       "StillImage"
+Set-ItemProperty $siKey "WiaVersion"     "2.0"
+Set-ItemProperty "$siKey\DeviceData" "Server"         "local"
+Set-ItemProperty "$siKey\DeviceData" "USDClass"       $CLSID
 Set-ItemProperty "$siKey\DeviceData" "HardwareConfig" -Value 1 -Type DWord
-Set-ItemProperty "$siKey\DeviceData" "DeviceType"    -Value 1 -Type DWord
+Set-ItemProperty "$siKey\DeviceData" "DeviceType"     -Value 1 -Type DWord
+Set-ItemProperty "$siKey\DeviceData" "SubClass"       "StillImage"
+Set-ItemProperty "$siKey\DeviceData" "WiaVersion"     "2.0"
+Write-Host "    StillImage key: ROOT\IMAGE\$devStr"
 
 # Restart WIA
 Write-Host "[7] Reiniciando WIA..."

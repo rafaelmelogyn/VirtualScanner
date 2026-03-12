@@ -86,16 +86,27 @@ STDMETHODIMP_(ULONG) CWiaDriver::Release()
 STDMETHODIMP CWiaDriver::QueryInterface(REFIID riid, void** ppv)
 {
     if (!ppv) return E_POINTER;
-    wchar_t guidStr[64];
+    *ppv = nullptr;
+
+    wchar_t guidStr[64] = {};
     StringFromGUID2(riid, guidStr, 64);
-    VSLog(L"QI: %s", guidStr);
-    if      (riid == IID_IUnknown || riid == IID_IWiaMiniDrv)
-             { *ppv = static_cast<IWiaMiniDrv*>(this); }
-    else if (riid == IID_IStiUSD)
-             { *ppv = static_cast<IStiUSD*>(this); }
-    else     { *ppv = nullptr; return E_NOINTERFACE; }
-    AddRef();
-    return S_OK;
+
+    // IMPORTANT: for COM identity with multiple inheritance, IUnknown must
+    // always map to the same controlling unknown pointer.
+    if (riid == IID_IUnknown || riid == IID_IStiUSD) {
+        *ppv = static_cast<IStiUSD*>(this);
+    } else if (riid == IID_IWiaMiniDrv) {
+        *ppv = static_cast<IWiaMiniDrv*>(this);
+    }
+
+    if (*ppv) {
+        VSLog(L"QI OK: %s", guidStr);
+        AddRef();
+        return S_OK;
+    }
+
+    VSLog(L"QI NOINTERFACE: %s", guidStr);
+    return E_NOINTERFACE;
 }
 
 //=============================================================================
@@ -113,7 +124,7 @@ STDMETHODIMP CWiaDriver::GetCapabilities(PSTI_USD_CAPS p)
     if (!p) return E_POINTER;
     ZeroMemory(p, sizeof(*p));
     p->dwVersion     = STI_VERSION;
-    p->dwGenericCaps = STI_USD_GENCAP_NATIVE_PUSHSUPPORT | STI_GENCAP_NOTIFICATIONS;
+    p->dwGenericCaps = STI_GENCAP_NOTIFICATIONS;
     return S_OK;
 }
 
@@ -174,10 +185,20 @@ HRESULT CWiaDriver::BuildItemTree(BSTR bstrRootName)
         return S_OK;
     }
 
+    BSTR bRootName = bstrRootName ? SysAllocString(bstrRootName) : SysAllocString(VS_DEVICE_NAME);
+    BSTR bRootFull = bstrRootName ? SysAllocString(bstrRootName) : SysAllocString(VS_DEVICE_NAME);
+    if (!bRootName || !bRootFull) {
+        if (bRootName) SysFreeString(bRootName);
+        if (bRootFull) SysFreeString(bRootFull);
+        return E_OUTOFMEMORY;
+    }
+
     HRESULT hr = wiasCreateDrvItem(
-        WiaItemTypeRoot | WiaItemTypeDevice,
-        L"Root", bstrRootName,
+        WiaItemTypeRoot | WiaItemTypeDevice | WiaItemTypeFolder,
+        bRootName, bRootFull,
         static_cast<IWiaMiniDrv*>(this), 0, nullptr, &m_pRoot);
+    SysFreeString(bRootName);
+    SysFreeString(bRootFull);
     VSLog(L"wiasCreateDrvItem Root hr=0x%08X m_pRoot=%p", hr, m_pRoot);
     if (FAILED(hr)) return hr;
 
@@ -207,13 +228,61 @@ HRESULT CWiaDriver::BuildItemTree(BSTR bstrRootName)
 HRESULT CWiaDriver::InitRootProperties(BYTE* pWiasContext)
 {
     VSLog(L"InitRootProperties ctx=%p", pWiasContext);
+
+    HRESULT hr = S_OK;
+
     BSTR bName = SysAllocString(VS_DEVICE_NAME);
-    HRESULT hr = wiasWritePropStr(pWiasContext, WIA_DIP_DEV_NAME, bName);
-    VSLog(L"  WIA_DIP_DEV_NAME hr=0x%08X", hr);
-    SysFreeString(bName);
-    LONG devType = StiDeviceTypeScanner;
-    hr = wiasWritePropLong(pWiasContext, WIA_DIP_DEV_TYPE, devType);
+    if (bName) {
+        hr = wiasWritePropStr(pWiasContext, WIA_DIP_DEV_NAME, bName);
+        VSLog(L"  WIA_DIP_DEV_NAME hr=0x%08X", hr);
+        SysFreeString(bName);
+    }
+
+    BSTR bDesc = SysAllocString(L"VirtualScanner ADS-4700W WIA");
+    if (bDesc) {
+        hr = wiasWritePropStr(pWiasContext, WIA_DIP_DEV_DESC, bDesc);
+        VSLog(L"  WIA_DIP_DEV_DESC hr=0x%08X", hr);
+        SysFreeString(bDesc);
+    }
+
+    BSTR bVend = SysAllocString(L"VirtualScanner");
+    if (bVend) {
+        hr = wiasWritePropStr(pWiasContext, WIA_DIP_VEND_DESC, bVend);
+        VSLog(L"  WIA_DIP_VEND_DESC hr=0x%08X", hr);
+        SysFreeString(bVend);
+    }
+
+    BSTR bDevId = SysAllocString(L"VirtualScannerWIA-Device-001");
+    if (bDevId) {
+        hr = wiasWritePropStr(pWiasContext, WIA_DIP_DEV_ID, bDevId);
+        VSLog(L"  WIA_DIP_DEV_ID hr=0x%08X", hr);
+        SysFreeString(bDevId);
+    }
+
+    BSTR bPort = SysAllocString(L"VirtualScannerPort");
+    if (bPort) {
+        hr = wiasWritePropStr(pWiasContext, WIA_DIP_PORT_NAME, bPort);
+        VSLog(L"  WIA_DIP_PORT_NAME hr=0x%08X", hr);
+        SysFreeString(bPort);
+    }
+
+    BSTR bSrv = SysAllocString(L"Local");
+    if (bSrv) {
+        hr = wiasWritePropStr(pWiasContext, WIA_DIP_SERVER_NAME, bSrv);
+        VSLog(L"  WIA_DIP_SERVER_NAME hr=0x%08X", hr);
+        SysFreeString(bSrv);
+    }
+
+    hr = wiasWritePropLong(pWiasContext, WIA_DIP_DEV_TYPE, StiDeviceTypeScanner);
     VSLog(L"  WIA_DIP_DEV_TYPE hr=0x%08X", hr);
+
+#ifdef WIA_DIP_STI_GEN_CAPS
+    hr = wiasWritePropLong(pWiasContext, WIA_DIP_STI_GEN_CAPS, STI_GENCAP_NOTIFICATIONS);
+    VSLog(L"  WIA_DIP_STI_GEN_CAPS hr=0x%08X", hr);
+#else
+    VSLog(L"  WIA_DIP_STI_GEN_CAPS not available in this SDK");
+#endif
+
     return S_OK;
 }
 
@@ -273,6 +342,7 @@ STDMETHODIMP CWiaDriver::drvInitializeWia(
           lFlags,
           bstrDeviceID ? bstrDeviceID : L"(null)",
           bstrRootName ? bstrRootName : L"(null)");
+    if (!plErr) return E_POINTER;
     *plErr = 0;
     if (ppInner) *ppInner = nullptr;
     if (!ppRoot) return E_POINTER;
@@ -285,6 +355,7 @@ STDMETHODIMP CWiaDriver::drvInitializeWia(
     }
 
     *ppRoot    = m_pRoot;
+    if (m_pRoot) m_pRoot->AddRef();
     m_queue    = VS_ScanQueue();
     m_queueIdx = 0;
     VSLog(L"drvInitializeWia OK ppRoot=%p queue=%zu", *ppRoot, m_queue.size());
@@ -302,9 +373,9 @@ STDMETHODIMP CWiaDriver::drvInitItemProperties(BYTE* pWiasContext, LONG lFlags, 
         // Fallback: assume child
         return InitChildProperties(pWiasContext);
     }
-    return (itemType & WiaItemTypeRoot)
-        ? InitRootProperties(pWiasContext)
-        : InitChildProperties(pWiasContext);
+    if ((itemType & WiaItemTypeRoot) || (itemType & WiaItemTypeDevice))
+        return InitRootProperties(pWiasContext);
+    return InitChildProperties(pWiasContext);
 }
 
 STDMETHODIMP CWiaDriver::drvValidateItemProperties(
@@ -373,6 +444,18 @@ STDMETHODIMP CWiaDriver::drvGetWiaFormatInfo(BYTE*, LONG, LONG* pcelt,
     return S_OK;
 }
 
+static void VS_RefreshQueueForAcquire(std::vector<std::wstring>& queue, int& idx)
+{
+    if (idx >= (int)queue.size()) {
+        std::vector<std::wstring> updated = VS_ScanQueue();
+        if (!updated.empty()) {
+            queue.swap(updated);
+            idx = 0;
+            VSLog(L"WIA queue refreshed dynamically: %zu files", queue.size());
+        }
+    }
+}
+
 //=============================================================================
 // drvAcquireItemData
 //=============================================================================
@@ -380,13 +463,17 @@ STDMETHODIMP CWiaDriver::drvAcquireItemData(
     BYTE* pWiasContext, LONG lFlags,
     PMINIDRV_TRANSFER_CONTEXT pmdtc, LONG* plErr)
 {
+    if (!plErr) return E_POINTER;
     *plErr = 0;
-    VSLog(L"drvAcquireItemData flags=0x%08X tymed=%ld", lFlags, pmdtc ? pmdtc->tymed : -1);
+    if (!pmdtc) return E_POINTER;
+
+    VSLog(L"drvAcquireItemData flags=0x%08X tymed=%ld", lFlags, pmdtc->tymed);
 
     if (m_queueIdx == 0) {
         m_queue = VS_ScanQueue();
         VSLog(L"Queue reloaded: %zu files", m_queue.size());
     }
+    VS_RefreshQueueForAcquire(m_queue, m_queueIdx);
     if (m_queue.empty() || m_queueIdx >= (int)m_queue.size()) {
         VSLog(L"No more images idx=%d total=%zu", m_queueIdx, m_queue.size());
         return HRESULT_FROM_WIN32(ERROR_NO_MORE_ITEMS);
@@ -401,29 +488,44 @@ STDMETHODIMP CWiaDriver::drvAcquireItemData(
 
     DWORD dibSize = (DWORD)GlobalSize(hDib);
     BYTE* pDib    = (BYTE*)GlobalLock(hDib);
+    if (!pDib) {
+        GlobalFree(hDib);
+        VSLog(L"GlobalLock failed for DIB");
+        return E_OUTOFMEMORY;
+    }
 
     BITMAPFILEHEADER bfh = {};
     bfh.bfType    = 0x4D42;
     bfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
     bfh.bfSize    = bfh.bfOffBits + ((BITMAPINFOHEADER*)pDib)->biSizeImage;
 
-    if (pmdtc && pmdtc->tymed == TYMED_FILE) {
+    if (pmdtc->tymed == TYMED_FILE) {
         HANDLE hFile = (HANDLE)(ULONG_PTR)pmdtc->hFile;
         if (hFile && hFile != INVALID_HANDLE_VALUE) {
             DWORD w = 0;
-            WriteFile(hFile, &bfh, sizeof(bfh), &w, nullptr);
-            WriteFile(hFile,  pDib, dibSize,    &w, nullptr);
+            BOOL ok1 = WriteFile(hFile, &bfh, sizeof(bfh), &w, nullptr);
+            BOOL ok2 = WriteFile(hFile,  pDib, dibSize,    &w, nullptr);
+            if (!ok1 || !ok2) {
+                VSLog(L"WriteFile failed err=%lu", ::GetLastError());
+                GlobalUnlock(hDib);
+                GlobalFree(hDib);
+                return HRESULT_FROM_WIN32(ERROR_WRITE_FAULT);
+            }
             pmdtc->lItemSize = (LONG)bfh.bfSize;
             VSLog(L"Wrote %lu bytes to file", bfh.bfSize);
         }
-    } else if (pmdtc) {
+    } else {
         DWORD total = (DWORD)(sizeof(bfh) + dibSize);
-        if (pmdtc->pTransferBuffer && (DWORD)pmdtc->lBufferSize >= total) {
-            memcpy(pmdtc->pTransferBuffer,               &bfh, sizeof(bfh));
-            memcpy(pmdtc->pTransferBuffer + sizeof(bfh),  pDib, dibSize);
-            pmdtc->lItemSize = (LONG)total;
-            VSLog(L"Wrote %lu bytes to buffer", total);
+        if (!pmdtc->pTransferBuffer || (DWORD)pmdtc->lBufferSize < total) {
+            VSLog(L"Transfer buffer too small: have=%ld need=%lu", pmdtc->lBufferSize, total);
+            GlobalUnlock(hDib);
+            GlobalFree(hDib);
+            return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
         }
+        memcpy(pmdtc->pTransferBuffer,               &bfh, sizeof(bfh));
+        memcpy(pmdtc->pTransferBuffer + sizeof(bfh),  pDib, dibSize);
+        pmdtc->lItemSize = (LONG)total;
+        VSLog(L"Wrote %lu bytes to buffer", total);
     }
 
     GlobalUnlock(hDib);
@@ -439,24 +541,56 @@ STDMETHODIMP CWiaDriver::drvAcquireItemData(
 //=============================================================================
 // COM exports
 //=============================================================================
+STDMETHODIMP_(ULONG) CClassFactory::AddRef()
+{
+    return (ULONG)InterlockedIncrement(&m_cRef);
+}
+
+STDMETHODIMP_(ULONG) CClassFactory::Release()
+{
+    LONG r = InterlockedDecrement(&m_cRef);
+    if (r <= 0) {
+        m_cRef = 1; // static factory; never delete
+        return 1;
+    }
+    return (ULONG)r;
+}
+
 STDMETHODIMP CClassFactory::QueryInterface(REFIID riid, void** ppv)
 {
     if (!ppv) return E_POINTER;
-    if (riid == IID_IUnknown || riid == IID_IClassFactory)
-        { *ppv = static_cast<IClassFactory*>(this); AddRef(); return S_OK; }
     *ppv = nullptr;
+
+    wchar_t guidStr[64] = {};
+    StringFromGUID2(riid, guidStr, 64);
+
+    if (riid == IID_IUnknown || riid == IID_IClassFactory) {
+        *ppv = static_cast<IClassFactory*>(this);
+        AddRef();
+        VSLog(L"ClassFactory::QI OK %s", guidStr);
+        return S_OK;
+    }
+
+    VSLog(L"ClassFactory::QI NOINTERFACE %s", guidStr);
     return E_NOINTERFACE;
 }
 
 STDMETHODIMP CClassFactory::CreateInstance(IUnknown* pOuter, REFIID riid, void** ppv)
 {
-    VSLog(L"CClassFactory::CreateInstance");
-    if (pOuter) return CLASS_E_NOAGGREGATION;
+    wchar_t guidStr[64] = {};
+    StringFromGUID2(riid, guidStr, 64);
+    VSLog(L"CClassFactory::CreateInstance pOuter=%p riid=%s", pOuter, guidStr);
+
+    // Some WIA host flows are strict/quirky with activation flags; don't abort
+    // activation only because pOuter is non-null in this virtual driver scenario.
     if (!ppv)   return E_POINTER;
     *ppv = nullptr;
+
     CWiaDriver* p = new (std::nothrow) CWiaDriver();
     if (!p) return E_OUTOFMEMORY;
+
     HRESULT hr = p->QueryInterface(riid, ppv);
+    VSLog(L"CClassFactory::CreateInstance QI hr=0x%08X out=%p", hr, ppv ? *ppv : nullptr);
     p->Release();
     return hr;
 }
@@ -472,7 +606,11 @@ static CClassFactory g_ClassFactory;
 
 STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, void** ppv)
 {
-    VSLog(L"DllGetClassObject");
+    wchar_t clsidStr[64] = {};
+    wchar_t iidStr[64] = {};
+    StringFromGUID2(rclsid, clsidStr, 64);
+    StringFromGUID2(riid, iidStr, 64);
+    VSLog(L"DllGetClassObject clsid=%s iid=%s", clsidStr, iidStr);
     if (rclsid != CLSID_VirtualScannerWIA) return CLASS_E_CLASSNOTAVAILABLE;
     return g_ClassFactory.QueryInterface(riid, ppv);
 }
