@@ -373,6 +373,18 @@ STDMETHODIMP CWiaDriver::drvGetWiaFormatInfo(BYTE*, LONG, LONG* pcelt,
     return S_OK;
 }
 
+static void VS_RefreshQueueForAcquire(std::vector<std::wstring>& queue, int& idx)
+{
+    if (idx >= (int)queue.size()) {
+        std::vector<std::wstring> updated = VS_ScanQueue();
+        if (!updated.empty()) {
+            queue.swap(updated);
+            idx = 0;
+            VSLog(L"WIA queue refreshed dynamically: %zu files", queue.size());
+        }
+    }
+}
+
 //=============================================================================
 // drvAcquireItemData
 //=============================================================================
@@ -380,13 +392,17 @@ STDMETHODIMP CWiaDriver::drvAcquireItemData(
     BYTE* pWiasContext, LONG lFlags,
     PMINIDRV_TRANSFER_CONTEXT pmdtc, LONG* plErr)
 {
+    if (!plErr) return E_POINTER;
     *plErr = 0;
-    VSLog(L"drvAcquireItemData flags=0x%08X tymed=%ld", lFlags, pmdtc ? pmdtc->tymed : -1);
+    if (!pmdtc) return E_POINTER;
+
+    VSLog(L"drvAcquireItemData flags=0x%08X tymed=%ld", lFlags, pmdtc->tymed);
 
     if (m_queueIdx == 0) {
         m_queue = VS_ScanQueue();
         VSLog(L"Queue reloaded: %zu files", m_queue.size());
     }
+    VS_RefreshQueueForAcquire(m_queue, m_queueIdx);
     if (m_queue.empty() || m_queueIdx >= (int)m_queue.size()) {
         VSLog(L"No more images idx=%d total=%zu", m_queueIdx, m_queue.size());
         return HRESULT_FROM_WIN32(ERROR_NO_MORE_ITEMS);
@@ -401,29 +417,44 @@ STDMETHODIMP CWiaDriver::drvAcquireItemData(
 
     DWORD dibSize = (DWORD)GlobalSize(hDib);
     BYTE* pDib    = (BYTE*)GlobalLock(hDib);
+    if (!pDib) {
+        GlobalFree(hDib);
+        VSLog(L"GlobalLock failed for DIB");
+        return E_OUTOFMEMORY;
+    }
 
     BITMAPFILEHEADER bfh = {};
     bfh.bfType    = 0x4D42;
     bfh.bfOffBits = sizeof(BITMAPFILEHEADER) + sizeof(BITMAPINFOHEADER);
     bfh.bfSize    = bfh.bfOffBits + ((BITMAPINFOHEADER*)pDib)->biSizeImage;
 
-    if (pmdtc && pmdtc->tymed == TYMED_FILE) {
+    if (pmdtc->tymed == TYMED_FILE) {
         HANDLE hFile = (HANDLE)(ULONG_PTR)pmdtc->hFile;
         if (hFile && hFile != INVALID_HANDLE_VALUE) {
             DWORD w = 0;
-            WriteFile(hFile, &bfh, sizeof(bfh), &w, nullptr);
-            WriteFile(hFile,  pDib, dibSize,    &w, nullptr);
+            BOOL ok1 = WriteFile(hFile, &bfh, sizeof(bfh), &w, nullptr);
+            BOOL ok2 = WriteFile(hFile,  pDib, dibSize,    &w, nullptr);
+            if (!ok1 || !ok2) {
+                VSLog(L"WriteFile failed err=%lu", GetLastError());
+                GlobalUnlock(hDib);
+                GlobalFree(hDib);
+                return HRESULT_FROM_WIN32(ERROR_WRITE_FAULT);
+            }
             pmdtc->lItemSize = (LONG)bfh.bfSize;
             VSLog(L"Wrote %lu bytes to file", bfh.bfSize);
         }
-    } else if (pmdtc) {
+    } else {
         DWORD total = (DWORD)(sizeof(bfh) + dibSize);
-        if (pmdtc->pTransferBuffer && (DWORD)pmdtc->lBufferSize >= total) {
-            memcpy(pmdtc->pTransferBuffer,               &bfh, sizeof(bfh));
-            memcpy(pmdtc->pTransferBuffer + sizeof(bfh),  pDib, dibSize);
-            pmdtc->lItemSize = (LONG)total;
-            VSLog(L"Wrote %lu bytes to buffer", total);
+        if (!pmdtc->pTransferBuffer || (DWORD)pmdtc->lBufferSize < total) {
+            VSLog(L"Transfer buffer too small: have=%ld need=%lu", pmdtc->lBufferSize, total);
+            GlobalUnlock(hDib);
+            GlobalFree(hDib);
+            return HRESULT_FROM_WIN32(ERROR_INSUFFICIENT_BUFFER);
         }
+        memcpy(pmdtc->pTransferBuffer,               &bfh, sizeof(bfh));
+        memcpy(pmdtc->pTransferBuffer + sizeof(bfh),  pDib, dibSize);
+        pmdtc->lItemSize = (LONG)total;
+        VSLog(L"Wrote %lu bytes to buffer", total);
     }
 
     GlobalUnlock(hDib);

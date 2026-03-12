@@ -67,7 +67,11 @@ Copie arquivos JPG, PNG, BMP, TIF para:
 C:\VirtualScanner\Queue\
 ```
 
-As imagens são lidas em **ordem alfabética**.
+Compatibilidade adicional: se existir uma pasta legada `C:\VirtulScanner\Queue\`,
+a fila também será lida automaticamente para facilitar testes e migração.
+
+As imagens são lidas em **ordem alfabética** e o driver recarrega a fila automaticamente
+quando novas imagens entram após o início da sessão de digitalização.
 
 ### 3. Escanear
 

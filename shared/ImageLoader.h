@@ -13,6 +13,7 @@
 using std::min;
 using std::max;
 #include <gdiplus.h>
+#include <cstdarg>
 #include <vector>
 #include <string>
 
@@ -21,6 +22,7 @@ using std::max;
 #pragma comment(lib, "gdi32.lib")
 
 #define VS_QUEUE_DIR   L"C:\\VirtualScanner\\Queue\\"
+#define VS_QUEUE_DIR_LEGACY_TYPO L"C:\\VirtulScanner\\Queue\\"
 #define VS_LOG_PATH    L"C:\\VirtualScanner\\Logs\\vscanner.log"
 #define VS_DEVICE_NAME L"VirtualScanner ADS-4700W"
 
@@ -29,6 +31,9 @@ using std::max;
 //-----------------------------------------------------------------------------
 inline void VSLog(const wchar_t* fmt, ...)
 {
+    CreateDirectoryW(L"C:\\VirtualScanner",        nullptr);
+    CreateDirectoryW(L"C:\\VirtualScanner\\Logs",  nullptr);
+
     wchar_t buf[2048] = {};
     va_list va; va_start(va, fmt); vswprintf_s(buf, fmt, va); va_end(va);
 
@@ -57,19 +62,25 @@ inline std::vector<std::wstring> VS_ScanQueue()
         L"*.bmp", L"*.jpg", L"*.jpeg",
         L"*.png", L"*.tif", L"*.tiff", nullptr
     };
-    for (int i = 0; exts[i]; i++) {
-        std::wstring pat = std::wstring(VS_QUEUE_DIR) + exts[i];
-        WIN32_FIND_DATAW fd;
-        HANDLE h = FindFirstFileW(pat.c_str(), &fd);
-        if (h != INVALID_HANDLE_VALUE) {
-            do {
-                if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
-                    result.push_back(std::wstring(VS_QUEUE_DIR) + fd.cFileName);
-            } while (FindNextFileW(h, &fd));
-            FindClose(h);
+
+    const wchar_t* dirs[] = { VS_QUEUE_DIR, VS_QUEUE_DIR_LEGACY_TYPO, nullptr };
+    for (int d = 0; dirs[d]; ++d) {
+        for (int i = 0; exts[i]; i++) {
+            std::wstring pat = std::wstring(dirs[d]) + exts[i];
+            WIN32_FIND_DATAW fd;
+            HANDLE h = FindFirstFileW(pat.c_str(), &fd);
+            if (h != INVALID_HANDLE_VALUE) {
+                do {
+                    if (!(fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY))
+                        result.push_back(std::wstring(dirs[d]) + fd.cFileName);
+                } while (FindNextFileW(h, &fd));
+                FindClose(h);
+            }
         }
     }
+
     std::sort(result.begin(), result.end());
+    result.erase(std::unique(result.begin(), result.end()), result.end());
     return result;
 }
 
