@@ -122,6 +122,8 @@ Se não existir `StillImage\Devices\ROOT\IMAGE\0000`, rode novamente `install_wi
 Se continuar com `Total: 0`, verifique no log o `riid` pedido em `CreateInstance`/`QI`.
 Se aparecer `QI NOINTERFACE`, envie o GUID para ajustar suporte de interface no driver.
 
+Após instalar, confirme no log chamadas de `drvInitializeWia` e `InitRootProperties`; se só houver `CreateInstance`, a enumeração não completou.
+
 **Scanner não aparece no TWAIN:**
 Verifique se os 4 registros foram criados:
 ```powershell

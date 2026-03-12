@@ -124,7 +124,7 @@ STDMETHODIMP CWiaDriver::GetCapabilities(PSTI_USD_CAPS p)
     if (!p) return E_POINTER;
     ZeroMemory(p, sizeof(*p));
     p->dwVersion     = STI_VERSION;
-    p->dwGenericCaps = STI_USD_GENCAP_NATIVE_PUSHSUPPORT | STI_GENCAP_NOTIFICATIONS;
+    p->dwGenericCaps = STI_GENCAP_NOTIFICATIONS;
     return S_OK;
 }
 
@@ -228,13 +228,57 @@ HRESULT CWiaDriver::BuildItemTree(BSTR bstrRootName)
 HRESULT CWiaDriver::InitRootProperties(BYTE* pWiasContext)
 {
     VSLog(L"InitRootProperties ctx=%p", pWiasContext);
+
+    HRESULT hr = S_OK;
+
     BSTR bName = SysAllocString(VS_DEVICE_NAME);
-    HRESULT hr = wiasWritePropStr(pWiasContext, WIA_DIP_DEV_NAME, bName);
-    VSLog(L"  WIA_DIP_DEV_NAME hr=0x%08X", hr);
-    SysFreeString(bName);
-    LONG devType = StiDeviceTypeScanner;
-    hr = wiasWritePropLong(pWiasContext, WIA_DIP_DEV_TYPE, devType);
+    if (bName) {
+        hr = wiasWritePropStr(pWiasContext, WIA_DIP_DEV_NAME, bName);
+        VSLog(L"  WIA_DIP_DEV_NAME hr=0x%08X", hr);
+        SysFreeString(bName);
+    }
+
+    BSTR bDesc = SysAllocString(L"VirtualScanner ADS-4700W WIA");
+    if (bDesc) {
+        hr = wiasWritePropStr(pWiasContext, WIA_DIP_DEV_DESC, bDesc);
+        VSLog(L"  WIA_DIP_DEV_DESC hr=0x%08X", hr);
+        SysFreeString(bDesc);
+    }
+
+    BSTR bVend = SysAllocString(L"VirtualScanner");
+    if (bVend) {
+        hr = wiasWritePropStr(pWiasContext, WIA_DIP_VEND_DESC, bVend);
+        VSLog(L"  WIA_DIP_VEND_DESC hr=0x%08X", hr);
+        SysFreeString(bVend);
+    }
+
+    BSTR bDevId = SysAllocString(L"VirtualScannerWIA-Device-001");
+    if (bDevId) {
+        hr = wiasWritePropStr(pWiasContext, WIA_DIP_DEV_ID, bDevId);
+        VSLog(L"  WIA_DIP_DEV_ID hr=0x%08X", hr);
+        SysFreeString(bDevId);
+    }
+
+    BSTR bPort = SysAllocString(L"VirtualScannerPort");
+    if (bPort) {
+        hr = wiasWritePropStr(pWiasContext, WIA_DIP_PORT_NAME, bPort);
+        VSLog(L"  WIA_DIP_PORT_NAME hr=0x%08X", hr);
+        SysFreeString(bPort);
+    }
+
+    BSTR bSrv = SysAllocString(L"Local");
+    if (bSrv) {
+        hr = wiasWritePropStr(pWiasContext, WIA_DIP_SERVER_NAME, bSrv);
+        VSLog(L"  WIA_DIP_SERVER_NAME hr=0x%08X", hr);
+        SysFreeString(bSrv);
+    }
+
+    hr = wiasWritePropLong(pWiasContext, WIA_DIP_DEV_TYPE, StiDeviceTypeScanner);
     VSLog(L"  WIA_DIP_DEV_TYPE hr=0x%08X", hr);
+
+    hr = wiasWritePropLong(pWiasContext, WIA_DIP_STI_GEN_CAPS, STI_GENCAP_NOTIFICATIONS);
+    VSLog(L"  WIA_DIP_STI_GEN_CAPS hr=0x%08X", hr);
+
     return S_OK;
 }
 
@@ -325,9 +369,9 @@ STDMETHODIMP CWiaDriver::drvInitItemProperties(BYTE* pWiasContext, LONG lFlags, 
         // Fallback: assume child
         return InitChildProperties(pWiasContext);
     }
-    return (itemType & WiaItemTypeRoot)
-        ? InitRootProperties(pWiasContext)
-        : InitChildProperties(pWiasContext);
+    if ((itemType & WiaItemTypeRoot) || (itemType & WiaItemTypeDevice))
+        return InitRootProperties(pWiasContext);
+    return InitChildProperties(pWiasContext);
 }
 
 STDMETHODIMP CWiaDriver::drvValidateItemProperties(
