@@ -86,16 +86,27 @@ STDMETHODIMP_(ULONG) CWiaDriver::Release()
 STDMETHODIMP CWiaDriver::QueryInterface(REFIID riid, void** ppv)
 {
     if (!ppv) return E_POINTER;
-    wchar_t guidStr[64];
+    *ppv = nullptr;
+
+    wchar_t guidStr[64] = {};
     StringFromGUID2(riid, guidStr, 64);
-    VSLog(L"QI: %s", guidStr);
-    if      (riid == IID_IUnknown || riid == IID_IWiaMiniDrv)
-             { *ppv = static_cast<IWiaMiniDrv*>(this); }
-    else if (riid == IID_IStiUSD)
-             { *ppv = static_cast<IStiUSD*>(this); }
-    else     { *ppv = nullptr; return E_NOINTERFACE; }
-    AddRef();
-    return S_OK;
+
+    // IMPORTANT: for COM identity with multiple inheritance, IUnknown must
+    // always map to the same controlling unknown pointer.
+    if (riid == IID_IUnknown || riid == IID_IStiUSD) {
+        *ppv = static_cast<IStiUSD*>(this);
+    } else if (riid == IID_IWiaMiniDrv) {
+        *ppv = static_cast<IWiaMiniDrv*>(this);
+    }
+
+    if (*ppv) {
+        VSLog(L"QI OK: %s", guidStr);
+        AddRef();
+        return S_OK;
+    }
+
+    VSLog(L"QI NOINTERFACE: %s", guidStr);
+    return E_NOINTERFACE;
 }
 
 //=============================================================================
@@ -183,7 +194,7 @@ HRESULT CWiaDriver::BuildItemTree(BSTR bstrRootName)
     }
 
     HRESULT hr = wiasCreateDrvItem(
-        WiaItemTypeRoot | WiaItemTypeDevice,
+        WiaItemTypeRoot | WiaItemTypeDevice | WiaItemTypeFolder,
         bRootName, bRootFull,
         static_cast<IWiaMiniDrv*>(this), 0, nullptr, &m_pRoot);
     SysFreeString(bRootName);

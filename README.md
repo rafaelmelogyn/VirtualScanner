@@ -106,6 +106,10 @@ C:\VirtualScanner\Logs\vscanner.log
 Restart-Service stisvc
 ```
 
+**Log mostra apenas `DllGetClassObject` / `CreateInstance` / `QueryInterface` (sem `drvInitializeWia`):**
+Isso indica que o COM está carregando a DLL, mas a sessão WIA não está completando a negociação do mini-driver.
+Use esta versão que corrige identidade COM de `IUnknown` no `QueryInterface` e marca o item raiz como `WiaItemTypeFolder`.
+
 **Scanner WIA instalado mas não listado (Total: 0):**
 Execute estas verificações no PowerShell (Admin):
 ```powershell
