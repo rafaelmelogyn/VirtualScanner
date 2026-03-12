@@ -106,6 +106,15 @@ C:\VirtualScanner\Logs\vscanner.log
 Restart-Service stisvc
 ```
 
+**Scanner WIA instalado mas não listado (Total: 0):**
+Execute estas verificações no PowerShell (Admin):
+```powershell
+Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Control\StillImage\Devices\ROOT\IMAGE\0000" -ErrorAction SilentlyContinue
+Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Enum\ROOT\IMAGE\0000" -ErrorAction SilentlyContinue
+Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Enum\ROOT\IMAGE\0000\DeviceData" -ErrorAction SilentlyContinue
+```
+Se não existir `StillImage\Devices\ROOT\IMAGE\0000`, rode novamente `install_wia.ps1` atualizado.
+
 **Scanner não aparece no TWAIN:**
 Verifique se os 4 registros foram criados:
 ```powershell
