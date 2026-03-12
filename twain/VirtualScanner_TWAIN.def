@@ -1,0 +1,3 @@
+LIBRARY TWAINDS_VirtualScanner
+EXPORTS
+    DS_Entry @1

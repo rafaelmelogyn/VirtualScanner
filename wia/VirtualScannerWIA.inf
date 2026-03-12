@@ -1,0 +1,76 @@
+[Version]
+Signature   = "$Windows NT$"
+Class       = Image
+ClassGUID   = {6bdd1fc6-810f-11d0-bec7-08002be2092f}
+Provider    = %Mfg%
+DriverVer   = 03/12/2026,1.0.0.0
+CatalogFile = VirtualScannerWIA.cat
+
+[DestinationDirs]
+DLL.CopyFiles = 11
+
+[DLL.CopyFiles]
+VirtualScannerWIA.dll
+
+[SourceDisksNames]
+1 = %DiskName%,,,""
+
+[SourceDisksFiles]
+VirtualScannerWIA.dll = 1
+
+[Manufacturer]
+%Mfg% = VirtualScanner,NTamd64
+
+[VirtualScanner.NTamd64]
+%DeviceDesc% = VirtualScanner.Install,ROOT\IMAGE\VirtualScannerWIA
+
+[VirtualScanner.Install]
+CopyFiles = DLL.CopyFiles
+
+[VirtualScanner.Install.Interfaces]
+AddInterface = {6bdd1fc6-810f-11d0-bec7-08002be2092f},,VirtualScanner.Interface
+
+[VirtualScanner.Interface]
+AddReg = VirtualScanner.Interface.AddReg
+
+[VirtualScanner.Interface.AddReg]
+HKR,,ClassGUID,,{6bdd1fc6-810f-11d0-bec7-08002be2092f}
+HKR,,USDClass,,{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}
+HKR,,HardwareConfig,0x00010001,1
+HKR,,DeviceType,0x00010001,1
+HKR,,Capabilities,0x00010001,0
+HKR,,WiaVersion,,"2.0"
+HKR,,SubClass,,"StillImage"
+HKR,DeviceData,Server,,"local"
+HKR,DeviceData,TwainDS,,""
+HKR,DeviceData,HardwareConfig,0x00010001,1
+
+[VirtualScanner.Install.HW]
+AddReg = VirtualScanner.HW.AddReg
+
+[VirtualScanner.HW.AddReg]
+HKR,,ClassGUID,,{6bdd1fc6-810f-11d0-bec7-08002be2092f}
+
+[VirtualScanner.Install.Services]
+AddService = StillImage,,StillImage.Service
+
+[StillImage.Service]
+ServiceType    = 1
+StartType      = 3
+ErrorControl   = 1
+ServiceBinary  = %12%\sti.dll
+DisplayName    = %SvcDesc%
+
+[VirtualScanner.Install.CoInstallers]
+AddReg = CoInstaller.AddReg
+
+[CoInstaller.AddReg]
+HKCR,CLSID\{A1B2C3D4-E5F6-7890-ABCD-EF1234567890},,,"VirtualScanner WIA Driver"
+HKCR,CLSID\{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}\InprocServer32,,,%11%\VirtualScannerWIA.dll
+HKCR,CLSID\{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}\InprocServer32,ThreadingModel,,"Both"
+
+[Strings]
+Mfg        = "VirtualScanner"
+DeviceDesc = "VirtualScanner ADS-4700W"
+DiskName   = "VirtualScanner Installation Disk"
+SvcDesc    = "Still Image Service"
