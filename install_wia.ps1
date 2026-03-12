@@ -180,6 +180,9 @@ Set-ItemProperty $classKey "WiaVersion"     "2.0"
 Set-ItemProperty $classKey "SubClass"       "StillImage"
 Set-ItemProperty "$classKey\DeviceData" "Server"  "local"
 Set-ItemProperty "$classKey\DeviceData" "TwainDS" ""
+Set-ItemProperty "$classKey\DeviceData" "USDClass" $CLSID
+Set-ItemProperty "$classKey\DeviceData" "WiaVersion" "2.0"
+Set-ItemProperty "$classKey\DeviceData" "SubClass" "StillImage"
 Write-Host "    Class key: $idxStr"
 
 # Enum\ROOT\IMAGE

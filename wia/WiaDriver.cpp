@@ -174,10 +174,20 @@ HRESULT CWiaDriver::BuildItemTree(BSTR bstrRootName)
         return S_OK;
     }
 
+    BSTR bRootName = bstrRootName ? SysAllocString(bstrRootName) : SysAllocString(VS_DEVICE_NAME);
+    BSTR bRootFull = bstrRootName ? SysAllocString(bstrRootName) : SysAllocString(VS_DEVICE_NAME);
+    if (!bRootName || !bRootFull) {
+        if (bRootName) SysFreeString(bRootName);
+        if (bRootFull) SysFreeString(bRootFull);
+        return E_OUTOFMEMORY;
+    }
+
     HRESULT hr = wiasCreateDrvItem(
         WiaItemTypeRoot | WiaItemTypeDevice,
-        L"Root", bstrRootName,
+        bRootName, bRootFull,
         static_cast<IWiaMiniDrv*>(this), 0, nullptr, &m_pRoot);
+    SysFreeString(bRootName);
+    SysFreeString(bRootFull);
     VSLog(L"wiasCreateDrvItem Root hr=0x%08X m_pRoot=%p", hr, m_pRoot);
     if (FAILED(hr)) return hr;
 
@@ -273,6 +283,7 @@ STDMETHODIMP CWiaDriver::drvInitializeWia(
           lFlags,
           bstrDeviceID ? bstrDeviceID : L"(null)",
           bstrRootName ? bstrRootName : L"(null)");
+    if (!plErr) return E_POINTER;
     *plErr = 0;
     if (ppInner) *ppInner = nullptr;
     if (!ppRoot) return E_POINTER;
@@ -285,6 +296,7 @@ STDMETHODIMP CWiaDriver::drvInitializeWia(
     }
 
     *ppRoot    = m_pRoot;
+    if (m_pRoot) m_pRoot->AddRef();
     m_queue    = VS_ScanQueue();
     m_queueIdx = 0;
     VSLog(L"drvInitializeWia OK ppRoot=%p queue=%zu", *ppRoot, m_queue.size());
@@ -435,7 +447,7 @@ STDMETHODIMP CWiaDriver::drvAcquireItemData(
             BOOL ok1 = WriteFile(hFile, &bfh, sizeof(bfh), &w, nullptr);
             BOOL ok2 = WriteFile(hFile,  pDib, dibSize,    &w, nullptr);
             if (!ok1 || !ok2) {
-                VSLog(L"WriteFile failed err=%lu", GetLastError());
+                VSLog(L"WriteFile failed err=%lu", ::GetLastError());
                 GlobalUnlock(hDib);
                 GlobalFree(hDib);
                 return HRESULT_FROM_WIN32(ERROR_WRITE_FAULT);

@@ -112,6 +112,10 @@ Verifique se os 4 registros foram criados:
 Get-Item "HKLM:\SOFTWARE\WOW6432Node\TWAIN\VirtualScanner ADS-4700W"
 ```
 
+**Build WIA mostra erro mas ainda diz "Build OK":**
+Use a versão atualizada de `build_wia_only.ps1` (ela remove DLL antiga e falha corretamente no `cl`).
+Se necessário, apague manualmente `wia\VirtualScannerWIA.dll` antes de compilar.
+
 **Erro de compilação "wiaguid.lib not found":**
 Instale o Windows SDK (incluso no Visual Studio Installer como componente opcional
 "Windows 10 SDK" ou "Windows 11 SDK").

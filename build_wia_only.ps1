@@ -62,11 +62,14 @@ $clCmd
 
 Write-Host ""
 Write-Host "Compilando WIA driver (64-bit)..."
+Remove-Item "$WIA\VirtualScannerWIA.dll" -Force -ErrorAction SilentlyContinue
 cmd /c $bat
+if ($LASTEXITCODE -ne 0) {
+    throw "Compilacao falhou com codigo $LASTEXITCODE"
+}
 
 if (!(Test-Path "$WIA\VirtualScannerWIA.dll")) {
-    Write-Host "ERRO: build falhou."
-    exit 1
+    throw "ERRO: build falhou (DLL nao foi gerada)."
 }
 
 $size = (Get-Item "$WIA\VirtualScannerWIA.dll").Length
