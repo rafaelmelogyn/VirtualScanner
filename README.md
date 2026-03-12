@@ -1,139 +1,112 @@
-# VirtualScanner – Scanner Virtual para Windows
+# VirtualScanner (reconstruído do zero)
 
-Scanner virtual que lê imagens de uma pasta e as expõe como scanner físico
-para qualquer software Windows, incluindo sistemas de cartórios.
+Projeto refeito para expor um scanner virtual estável via:
 
-## Compatibilidade
+- **TWAIN (32-bit)** para NAPS2 e softwares legados.
+- **WIA (64-bit)** para Windows Fax and Scan, Paint e apps WIA.
 
-| Software                     | Protocolo | Bits |
-|------------------------------|-----------|------|
-| Windows Fax and Scan         | WIA       | 64   |
-| Microsoft Paint              | WIA       | 64   |
-| Qualquer app moderno Windows | WIA       | 64   |
-| NAPS2                        | TWAIN     | 32   |
-| IrfanView                    | TWAIN     | 32   |
-| e-Notariado / PrinTWAIN      | TWAIN     | 32   |
-| Software de cartório legado  | TWAIN     | 32   |
+A implementação TWAIN segue um fluxo de estados compatível com o modelo usado nos exemplos do repositório `twain/twain-samples` (abertura da fonte, enable, evento `MSG_XFERREADY`, transferência, `MSG_ENDXFER`).
+
+---
+
+## Estrutura
+
+```text
+VirtualScanner/
+├─ build.ps1                  # build + instalação completa (WIA + TWAIN)
+├─ build_twain_only.ps1       # build + instalação TWAIN
+├─ build_wia_only.ps1         # build + instalação WIA
+├─ uninstall.ps1              # remove registro e arquivos instalados
+├─ shared/
+│  └─ ImageLoader.h           # leitura de imagens e log
+├─ twain/
+│  ├─ twain.h
+│  ├─ VirtualScanner_TWAIN.cpp
+│  └─ VirtualScanner_TWAIN.def
+└─ wia/
+   ├─ WiaDriver.cpp
+   ├─ WiaDriver.h
+   ├─ VirtualScannerWIA.def
+   └─ VirtualScannerWIA.inf
+```
+
+---
 
 ## Pré-requisitos
 
-- Windows 10 ou 11 (x64)
-- Visual Studio 2019 ou 2022 Community (com "Desktop development with C++")
-  Download: https://visualstudio.microsoft.com/downloads/
-- PowerShell rodando como **Administrador**
+- Windows 10/11 x64
+- Visual Studio 2019/2022 com C++ Desktop
+- PowerShell em modo Administrador
 
-## Estrutura do projeto
+---
 
-```
-VirtualScanner/
-├── build.ps1                    ← script principal (compilar + instalar)
-├── uninstall.ps1                ← remover o driver
-├── shared/
-│   └── ImageLoader.h            ← carregador de imagens (GDI+, shared)
-├── wia/
-│   ├── WiaDriver.h              ← header do minidriver WIA
-│   ├── WiaDriver.cpp            ← implementação WIA 2.0 (64-bit)
-│   ├── VirtualScannerWIA.def    ← exports COM
-│   └── VirtualScannerWIA.inf   ← INF de instalação (para deploy via setupapi)
-└── twain/
-    ├── twain.h                  ← header TWAIN 1.9 (limpo, sem conflito)
-    ├── VirtualScanner_TWAIN.cpp ← implementação TWAIN DS (32-bit)
-    └── VirtualScanner_TWAIN.def ← export DS_Entry @1
-```
-
-## Como usar
-
-### 1. Compilar e instalar
-
-Abra **PowerShell como Administrador**, vá até a pasta do projeto e rode:
+## Build e instalação
 
 ```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+Set-ExecutionPolicy -Scope Process Bypass
 .\build.ps1
 ```
 
 O script:
-- Compila o WIA driver (64-bit) usando vcvars64
-- Compila o TWAIN driver (32-bit) usando vcvars32
-- Copia as DLLs para os locais corretos do Windows
-- Registra todos os entries de registro necessários
-- Reinicia o serviço WIA (stisvc)
 
-### 2. Colocar imagens na fila
+1. Compila WIA x64.
+2. Compila TWAIN x86.
+3. Instala e registra WIA (COM + StillImage).
+4. Instala TWAIN em `C:\Windows\twain_32\VirtualScanner\TWAINDS_VirtualScanner.ds`.
+5. Cria chaves TWAIN para hosts 32 e 64 bits.
 
-Copie arquivos JPG, PNG, BMP, TIF para:
+---
 
-```
+## Pasta de entrada das imagens
+
+Coloque imagens em:
+
+```text
 C:\VirtualScanner\Queue\
 ```
 
-As imagens são lidas em **ordem alfabética**.
+Formatos suportados pelo loader atual: JPG/PNG/BMP/TIF/GIF.
 
-### 3. Escanear
+As imagens são entregues em ordem alfabética.
 
-**Via WIA (Windows Fax and Scan, Paint, etc.):**
-1. Abra o aplicativo
-2. Vá em Arquivo → Digitalizar / Novo scan
-3. Selecione "VirtualScanner ADS-4700W"
-4. Clique em Digitalizar
+---
 
-**Via TWAIN (NAPS2, cartório, etc.):**
-1. Abra o aplicativo
-2. Vá em Scanners → Adicionar dispositivo → TWAIN
-3. Selecione "VirtualScanner ADS-4700W"
-4. Clique em Escanear
+## Checklist rápido (quando o scanner não aparece)
 
-### 4. Verificar log
+### 1) Validar TWAIN
 
-```
-C:\VirtualScanner\Logs\vscanner.log
-```
-
-### 5. Desinstalar
-
-```powershell
-.\uninstall.ps1
-```
-
-## Solução de problemas
-
-**Scanner não aparece no WIA:**
-```powershell
-Restart-Service stisvc
-```
-
-**Scanner não aparece no TWAIN:**
-Verifique se os 4 registros foram criados:
 ```powershell
 Get-Item "HKLM:\SOFTWARE\WOW6432Node\TWAIN\VirtualScanner ADS-4700W"
 ```
 
-**Erro de compilação "wiaguid.lib not found":**
-Instale o Windows SDK (incluso no Visual Studio Installer como componente opcional
-"Windows 10 SDK" ou "Windows 11 SDK").
+Verifique se `Path` aponta para o arquivo `.ds` em `twain_32`.
 
-**Erro de policy de execução do PowerShell:**
-```powershell
-Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
-```
+### 2) Validar WIA
 
-**Testar sem abrir app:**
 ```powershell
-# Listar scanners WIA disponíveis:
 $wia = New-Object -ComObject WIA.DeviceManager
 $wia.DeviceInfos | ForEach-Object { $_.Properties["Name"].Value }
 ```
 
-## Notas técnicas
+O nome esperado é `VirtualScanner ADS-4700W`.
 
-- O **WIA driver** é uma DLL COM 64-bit carregada pelo serviço `stisvc` no processo local.
-  Não requer assinatura de kernel (é user-mode).
+### 3) Reiniciar serviço WIA
 
-- O **TWAIN driver** é uma DLL 32-bit colocada em `C:\Windows\twain_32\`.
-  O TWAIN DSM a carrega via registro em `HKLM\SOFTWARE\WOW6432Node\TWAIN\`.
+```powershell
+Restart-Service stisvc
+```
 
-- As imagens são lidas com **GDI+** (nativo no Windows), suportando
-  JPG, PNG, BMP, GIF, TIF sem dependências externas.
+### 4) Ver log
 
-- O CLSID do WIA driver é fixo:
-  `{A1B2C3D4-E5F6-7890-ABCD-EF1234567890}`
+```text
+C:\VirtualScanner\Logs\vscanner.log
+```
+
+---
+
+## Observações importantes
+
+- Apps 64-bit só enxergam TWAIN 64-bit; apps 32-bit enxergam TWAIN 32-bit.
+  Este projeto instala **TWAIN 32-bit** (compatível com a maioria dos legados).
+- Para Windows Fax and Scan, o canal é WIA.
+- Se houver outro driver com mesmo nome, desinstale antes com `uninstall.ps1`.
