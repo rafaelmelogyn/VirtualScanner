@@ -493,24 +493,56 @@ STDMETHODIMP CWiaDriver::drvAcquireItemData(
 //=============================================================================
 // COM exports
 //=============================================================================
+STDMETHODIMP_(ULONG) CClassFactory::AddRef()
+{
+    return (ULONG)InterlockedIncrement(&m_cRef);
+}
+
+STDMETHODIMP_(ULONG) CClassFactory::Release()
+{
+    LONG r = InterlockedDecrement(&m_cRef);
+    if (r <= 0) {
+        m_cRef = 1; // static factory; never delete
+        return 1;
+    }
+    return (ULONG)r;
+}
+
 STDMETHODIMP CClassFactory::QueryInterface(REFIID riid, void** ppv)
 {
     if (!ppv) return E_POINTER;
-    if (riid == IID_IUnknown || riid == IID_IClassFactory)
-        { *ppv = static_cast<IClassFactory*>(this); AddRef(); return S_OK; }
     *ppv = nullptr;
+
+    wchar_t guidStr[64] = {};
+    StringFromGUID2(riid, guidStr, 64);
+
+    if (riid == IID_IUnknown || riid == IID_IClassFactory) {
+        *ppv = static_cast<IClassFactory*>(this);
+        AddRef();
+        VSLog(L"ClassFactory::QI OK %s", guidStr);
+        return S_OK;
+    }
+
+    VSLog(L"ClassFactory::QI NOINTERFACE %s", guidStr);
     return E_NOINTERFACE;
 }
 
 STDMETHODIMP CClassFactory::CreateInstance(IUnknown* pOuter, REFIID riid, void** ppv)
 {
-    VSLog(L"CClassFactory::CreateInstance");
-    if (pOuter) return CLASS_E_NOAGGREGATION;
+    wchar_t guidStr[64] = {};
+    StringFromGUID2(riid, guidStr, 64);
+    VSLog(L"CClassFactory::CreateInstance pOuter=%p riid=%s", pOuter, guidStr);
+
+    // Some WIA host flows are strict/quirky with activation flags; don't abort
+    // activation only because pOuter is non-null in this virtual driver scenario.
     if (!ppv)   return E_POINTER;
     *ppv = nullptr;
+
     CWiaDriver* p = new (std::nothrow) CWiaDriver();
     if (!p) return E_OUTOFMEMORY;
+
     HRESULT hr = p->QueryInterface(riid, ppv);
+    VSLog(L"CClassFactory::CreateInstance QI hr=0x%08X out=%p", hr, ppv ? *ppv : nullptr);
     p->Release();
     return hr;
 }
@@ -526,7 +558,11 @@ static CClassFactory g_ClassFactory;
 
 STDAPI DllGetClassObject(REFCLSID rclsid, REFIID riid, void** ppv)
 {
-    VSLog(L"DllGetClassObject");
+    wchar_t clsidStr[64] = {};
+    wchar_t iidStr[64] = {};
+    StringFromGUID2(rclsid, clsidStr, 64);
+    StringFromGUID2(riid, iidStr, 64);
+    VSLog(L"DllGetClassObject clsid=%s iid=%s", clsidStr, iidStr);
     if (rclsid != CLSID_VirtualScannerWIA) return CLASS_E_CLASSNOTAVAILABLE;
     return g_ClassFactory.QueryInterface(riid, ppv);
 }

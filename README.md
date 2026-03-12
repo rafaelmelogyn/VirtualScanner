@@ -119,6 +119,9 @@ Get-ItemProperty "HKLM:\SYSTEM\CurrentControlSet\Enum\ROOT\IMAGE\0000\DeviceData
 ```
 Se não existir `StillImage\Devices\ROOT\IMAGE\0000`, rode novamente `install_wia.ps1` atualizado.
 
+Se continuar com `Total: 0`, verifique no log o `riid` pedido em `CreateInstance`/`QI`.
+Se aparecer `QI NOINTERFACE`, envie o GUID para ajustar suporte de interface no driver.
+
 **Scanner não aparece no TWAIN:**
 Verifique se os 4 registros foram criados:
 ```powershell

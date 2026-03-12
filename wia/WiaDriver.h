@@ -102,9 +102,14 @@ private:
 class CClassFactory : public IClassFactory
 {
 public:
+    CClassFactory() : m_cRef(1) {}
+
     STDMETHODIMP         QueryInterface(REFIID riid, void** ppv);
-    STDMETHODIMP_(ULONG) AddRef()  { return 2; }
-    STDMETHODIMP_(ULONG) Release() { return 1; }
+    STDMETHODIMP_(ULONG) AddRef();
+    STDMETHODIMP_(ULONG) Release();
     STDMETHODIMP CreateInstance(IUnknown* pOuter, REFIID riid, void** ppv);
     STDMETHODIMP LockServer(BOOL fLock);
+
+private:
+    volatile LONG m_cRef;
 };
