@@ -1,399 +1,397 @@
 //=============================================================================
 // VirtualScanner_TWAIN.cpp
-// TWAIN 1.9 Data Source  –  32-bit DLL
-// Compatible with: NAPS2, IrfanView, cartório software (PrinTWAIN, eCartório…)
-// Build: vcvars32 + cl (see build.ps1)
+// TWAIN Data Source (32-bit) inspired by twain/twain-samples state flow.
 //=============================================================================
 #define WIN32_LEAN_AND_MEAN
 #define NOMINMAX
 #include <windows.h>
-#include <gdiplus.h>
-#include <vector>
-#include <string>
+
 #include <algorithm>
+#include <string>
+#include <vector>
 
-// twain.h lives in the same twain/ folder
 #include "twain.h"
-
-// shared image loader
 #include "..\shared\ImageLoader.h"
 
-#pragma comment(lib, "gdiplus.lib")
 #pragma comment(lib, "user32.lib")
 #pragma comment(lib, "gdi32.lib")
+#pragma comment(lib, "gdiplus.lib")
 
-//=============================================================================
-// State
-//=============================================================================
-static TW_UINT16             g_cc            = TWCC_SUCCESS;
-static std::vector<std::wstring> g_queue;
-static int                   g_idx           = 0;
-static bool                  g_ready         = false;   // images available
-static bool                  g_readySent     = false;   // XFERREADY already sent
-static HWND                  g_hAppWnd       = nullptr;
+namespace {
 
-//=============================================================================
-// DllMain
-//=============================================================================
+constexpr char kManufacturer[] = "VirtualScanner";
+constexpr char kProductFamily[] = "Virtual Scanner";
+constexpr char kProductName[] = "VirtualScanner ADS-4700W";
+
+TW_UINT16 g_conditionCode = TWCC_SUCCESS;
+HWND g_parentWindow = nullptr;
+bool g_dsOpen = false;
+bool g_dsEnabled = false;
+bool g_xferReadySent = false;
+std::vector<std::wstring> g_imageQueue;
+size_t g_nextImageIndex = 0;
+
+void ResetTransferQueue()
+{
+    g_imageQueue = VS_ScanQueue();
+    g_nextImageIndex = 0;
+    g_xferReadySent = false;
+    VSLog(L"TWAIN queue loaded: %zu file(s)", g_imageQueue.size());
+}
+
+bool HasPendingTransfer()
+{
+    return g_nextImageIndex < g_imageQueue.size();
+}
+
+TW_HANDLE MakeOneValue(TW_UINT16 itemType, TW_UINT32 value)
+{
+    auto* one = reinterpret_cast<TW_ONEVALUE*>(GlobalAlloc(GPTR, sizeof(TW_ONEVALUE)));
+    if (!one) {
+        g_conditionCode = TWCC_LOWMEMORY;
+        return nullptr;
+    }
+    one->ItemType = itemType;
+    one->Item = value;
+    return one;
+}
+
+TW_HANDLE MakeFix32(float value)
+{
+    auto* one = reinterpret_cast<TW_ONEVALUE*>(GlobalAlloc(GPTR, sizeof(TW_ONEVALUE)));
+    if (!one) {
+        g_conditionCode = TWCC_LOWMEMORY;
+        return nullptr;
+    }
+
+    one->ItemType = TWTY_FIX32;
+    TW_FIX32 fx{};
+    fx.Whole = static_cast<TW_INT16>(value);
+    fx.Frac = static_cast<TW_UINT16>((value - static_cast<float>(fx.Whole)) * 65536.0f);
+    memcpy(&one->Item, &fx, sizeof(TW_FIX32));
+    return one;
+}
+
+TW_UINT16 FillIdentity(pTW_IDENTITY identity)
+{
+    if (!identity) {
+        g_conditionCode = TWCC_BADVALUE;
+        return TWRC_FAILURE;
+    }
+
+    identity->Id = 1;
+    identity->ProtocolMajor = TWON_PROTOCOLMAJOR;
+    identity->ProtocolMinor = TWON_PROTOCOLMINOR;
+    identity->SupportedGroups = DG_CONTROL | DG_IMAGE;
+    identity->Version.MajorNum = 1;
+    identity->Version.MinorNum = 0;
+    identity->Version.Language = TWLG_USA;
+    identity->Version.Country = TWCY_USA;
+
+    strncpy_s(identity->Version.Info, "1.0.0", sizeof(identity->Version.Info) - 1);
+    strncpy_s(identity->Manufacturer, kManufacturer, sizeof(identity->Manufacturer) - 1);
+    strncpy_s(identity->ProductFamily, kProductFamily, sizeof(identity->ProductFamily) - 1);
+    strncpy_s(identity->ProductName, kProductName, sizeof(identity->ProductName) - 1);
+
+    g_conditionCode = TWCC_SUCCESS;
+    return TWRC_SUCCESS;
+}
+
+TW_UINT16 HandleCapability(pTW_CAPABILITY cap, TW_UINT16 msg)
+{
+    if (!cap) {
+        g_conditionCode = TWCC_BADVALUE;
+        return TWRC_FAILURE;
+    }
+
+    if (msg == MSG_SET || msg == MSG_SETCONSTRAINT || msg == MSG_RESET) {
+        g_conditionCode = TWCC_SUCCESS;
+        return TWRC_SUCCESS;
+    }
+
+    if (msg != MSG_GET && msg != MSG_GETCURRENT && msg != MSG_GETDEFAULT && msg != MSG_QUERYSUPPORT) {
+        g_conditionCode = TWCC_CAPBADOPERATION;
+        return TWRC_FAILURE;
+    }
+
+    switch (cap->Cap) {
+    case CAP_XFERCOUNT:
+        cap->ConType = TWON_ONEVALUE;
+        cap->hContainer = MakeOneValue(TWTY_INT16, static_cast<TW_UINT32>(static_cast<TW_INT16>(-1)));
+        return cap->hContainer ? TWRC_SUCCESS : TWRC_FAILURE;
+
+    case CAP_UICONTROLLABLE:
+    case CAP_DEVICEONLINE:
+        cap->ConType = TWON_ONEVALUE;
+        cap->hContainer = MakeOneValue(TWTY_BOOL, TRUE);
+        return cap->hContainer ? TWRC_SUCCESS : TWRC_FAILURE;
+
+    case CAP_FEEDERENABLED:
+        cap->ConType = TWON_ONEVALUE;
+        cap->hContainer = MakeOneValue(TWTY_BOOL, FALSE);
+        return cap->hContainer ? TWRC_SUCCESS : TWRC_FAILURE;
+
+    case CAP_FEEDERLOADED:
+        cap->ConType = TWON_ONEVALUE;
+        cap->hContainer = MakeOneValue(TWTY_BOOL, HasPendingTransfer() ? TRUE : FALSE);
+        return cap->hContainer ? TWRC_SUCCESS : TWRC_FAILURE;
+
+    case CAP_INDICATORS:
+        cap->ConType = TWON_ONEVALUE;
+        cap->hContainer = MakeOneValue(TWTY_BOOL, FALSE);
+        return cap->hContainer ? TWRC_SUCCESS : TWRC_FAILURE;
+
+    case ICAP_XFERMECH:
+        cap->ConType = TWON_ONEVALUE;
+        cap->hContainer = MakeOneValue(TWTY_UINT16, TWSX_NATIVE);
+        return cap->hContainer ? TWRC_SUCCESS : TWRC_FAILURE;
+
+    case ICAP_PIXELTYPE:
+        cap->ConType = TWON_ONEVALUE;
+        cap->hContainer = MakeOneValue(TWTY_UINT16, TWPT_RGB);
+        return cap->hContainer ? TWRC_SUCCESS : TWRC_FAILURE;
+
+    case ICAP_BITDEPTH:
+        cap->ConType = TWON_ONEVALUE;
+        cap->hContainer = MakeOneValue(TWTY_UINT16, 24);
+        return cap->hContainer ? TWRC_SUCCESS : TWRC_FAILURE;
+
+    case ICAP_UNITS:
+        cap->ConType = TWON_ONEVALUE;
+        cap->hContainer = MakeOneValue(TWTY_UINT16, TWUN_INCHES);
+        return cap->hContainer ? TWRC_SUCCESS : TWRC_FAILURE;
+
+    case ICAP_XRESOLUTION:
+    case ICAP_YRESOLUTION:
+    case ICAP_XNATIVERESOLUTION:
+    case ICAP_YNATIVERESOLUTION:
+        cap->ConType = TWON_ONEVALUE;
+        cap->hContainer = MakeFix32(200.0f);
+        return cap->hContainer ? TWRC_SUCCESS : TWRC_FAILURE;
+
+    default:
+        g_conditionCode = TWCC_CAPUNSUPPORTED;
+        return TWRC_FAILURE;
+    }
+}
+
+TW_UINT16 HandleControl(TW_UINT16 DAT, TW_UINT16 MSG, TW_MEMREF pData)
+{
+    switch (DAT) {
+    case DAT_STATUS:
+        if (MSG == MSG_GET) {
+            auto* status = reinterpret_cast<pTW_STATUS>(pData);
+            if (!status) {
+                g_conditionCode = TWCC_BADVALUE;
+                return TWRC_FAILURE;
+            }
+            status->ConditionCode = g_conditionCode;
+            status->Reserved = 0;
+            return TWRC_SUCCESS;
+        }
+        break;
+
+    case DAT_IDENTITY:
+        if (MSG == MSG_GET || MSG == MSG_GETFIRST) {
+            return FillIdentity(reinterpret_cast<pTW_IDENTITY>(pData));
+        }
+        if (MSG == MSG_GETNEXT) {
+            auto rc = FillIdentity(reinterpret_cast<pTW_IDENTITY>(pData));
+            return (rc == TWRC_SUCCESS) ? TWRC_ENDOFLIST : rc;
+        }
+        if (MSG == MSG_OPENDS) {
+            g_dsOpen = true;
+            g_conditionCode = TWCC_SUCCESS;
+            ResetTransferQueue();
+            VSLog(L"TWAIN MSG_OPENDS");
+            return TWRC_SUCCESS;
+        }
+        if (MSG == MSG_CLOSEDS) {
+            g_dsEnabled = false;
+            g_dsOpen = false;
+            g_xferReadySent = false;
+            g_conditionCode = TWCC_SUCCESS;
+            VSLog(L"TWAIN MSG_CLOSEDS");
+            return TWRC_SUCCESS;
+        }
+        break;
+
+    case DAT_USERINTERFACE:
+        if (MSG == MSG_ENABLEDS || MSG == MSG_ENABLEDSUIONLY) {
+            auto* ui = reinterpret_cast<pTW_USERINTERFACE>(pData);
+            g_parentWindow = ui ? reinterpret_cast<HWND>(ui->hParent) : nullptr;
+            g_dsEnabled = true;
+            g_conditionCode = TWCC_SUCCESS;
+            ResetTransferQueue();
+            VSLog(L"TWAIN MSG_ENABLEDS parent=%p", g_parentWindow);
+            return TWRC_SUCCESS;
+        }
+        if (MSG == MSG_DISABLEDS) {
+            g_dsEnabled = false;
+            g_xferReadySent = false;
+            g_conditionCode = TWCC_SUCCESS;
+            VSLog(L"TWAIN MSG_DISABLEDS");
+            return TWRC_SUCCESS;
+        }
+        break;
+
+    case DAT_EVENT:
+        if (MSG == MSG_PROCESSEVENT) {
+            auto* twEvent = reinterpret_cast<pTW_EVENT>(pData);
+            if (!twEvent) {
+                g_conditionCode = TWCC_BADVALUE;
+                return TWRC_FAILURE;
+            }
+
+            if (g_dsEnabled && HasPendingTransfer() && !g_xferReadySent) {
+                twEvent->TWMessage = MSG_XFERREADY;
+                g_xferReadySent = true;
+                g_conditionCode = TWCC_SUCCESS;
+                return TWRC_DSEVENT;
+            }
+
+            twEvent->TWMessage = MSG_NULL;
+            g_conditionCode = TWCC_SUCCESS;
+            return TWRC_NOTDSEVENT;
+        }
+        break;
+
+    case DAT_PENDINGXFERS:
+        if (!pData) {
+            g_conditionCode = TWCC_BADVALUE;
+            return TWRC_FAILURE;
+        }
+        {
+            auto* pending = reinterpret_cast<pTW_PENDINGXFERS>(pData);
+            if (MSG == MSG_GET || MSG == MSG_ENDXFER) {
+                pending->Count = static_cast<TW_UINT16>(std::min<size_t>(65535, g_imageQueue.size() - g_nextImageIndex));
+                if (MSG == MSG_ENDXFER) {
+                    g_xferReadySent = false;
+                }
+                g_conditionCode = TWCC_SUCCESS;
+                return TWRC_SUCCESS;
+            }
+            if (MSG == MSG_RESET) {
+                g_nextImageIndex = g_imageQueue.size();
+                pending->Count = 0;
+                g_xferReadySent = false;
+                g_conditionCode = TWCC_SUCCESS;
+                return TWRC_SUCCESS;
+            }
+        }
+        break;
+
+    case DAT_CAPABILITY:
+        return HandleCapability(reinterpret_cast<pTW_CAPABILITY>(pData), MSG);
+
+    case DAT_SETUPMEMXFER:
+        if (MSG == MSG_GET && pData) {
+            auto* mem = reinterpret_cast<pTW_SETUPMEMXFER>(pData);
+            mem->MinBufSize = 64 * 1024;
+            mem->MaxBufSize = 512 * 1024;
+            mem->Preferred = 128 * 1024;
+            g_conditionCode = TWCC_SUCCESS;
+            return TWRC_SUCCESS;
+        }
+        break;
+
+    default:
+        break;
+    }
+
+    g_conditionCode = TWCC_SUCCESS;
+    return TWRC_SUCCESS;
+}
+
+TW_UINT16 HandleImage(TW_UINT16 DAT, TW_UINT16 MSG, TW_MEMREF pData)
+{
+    if (DAT == DAT_IMAGEINFO && MSG == MSG_GET) {
+        auto* info = reinterpret_cast<pTW_IMAGEINFO>(pData);
+        if (!info) {
+            g_conditionCode = TWCC_BADVALUE;
+            return TWRC_FAILURE;
+        }
+
+        int width = 850;
+        int height = 1100;
+        if (HasPendingTransfer()) {
+            HGLOBAL dimProbe = VS_LoadAsDIB(g_imageQueue[g_nextImageIndex], &width, &height);
+            if (dimProbe) {
+                GlobalFree(dimProbe);
+            }
+        }
+
+        info->XResolution.Whole = 200;
+        info->XResolution.Frac = 0;
+        info->YResolution.Whole = 200;
+        info->YResolution.Frac = 0;
+        info->ImageWidth = width;
+        info->ImageLength = height;
+        info->SamplesPerPixel = 3;
+        info->BitsPerSample[0] = 8;
+        info->BitsPerSample[1] = 8;
+        info->BitsPerSample[2] = 8;
+        info->BitsPerPixel = 24;
+        info->Planar = FALSE;
+        info->PixelType = TWPT_RGB;
+        info->Compression = TWCP_NONE;
+        g_conditionCode = TWCC_SUCCESS;
+        return TWRC_SUCCESS;
+    }
+
+    if (DAT == DAT_IMAGENATIVEXFER && MSG == MSG_GET) {
+        if (!pData || !HasPendingTransfer()) {
+            g_conditionCode = TWCC_NODS;
+            return TWRC_FAILURE;
+        }
+
+        HGLOBAL dib = VS_LoadAsDIB(g_imageQueue[g_nextImageIndex]);
+        if (!dib) {
+            g_conditionCode = TWCC_OPERATIONERROR;
+            return TWRC_FAILURE;
+        }
+
+        *reinterpret_cast<TW_HANDLE*>(pData) = dib;
+        VSLog(L"TWAIN native xfer: %s", g_imageQueue[g_nextImageIndex].c_str());
+        ++g_nextImageIndex;
+        g_conditionCode = TWCC_SUCCESS;
+        return TWRC_XFERDONE;
+    }
+
+    g_conditionCode = TWCC_SUCCESS;
+    return TWRC_SUCCESS;
+}
+
+} // namespace
+
 BOOL APIENTRY DllMain(HMODULE, DWORD reason, LPVOID)
 {
     if (reason == DLL_PROCESS_ATTACH) {
-        CreateDirectoryW(L"C:\\VirtualScanner",        nullptr);
-        CreateDirectoryW(L"C:\\VirtualScanner\\Logs",  nullptr);
+        CreateDirectoryW(L"C:\\VirtualScanner", nullptr);
+        CreateDirectoryW(L"C:\\VirtualScanner\\Logs", nullptr);
         CreateDirectoryW(L"C:\\VirtualScanner\\Queue", nullptr);
-        VSLog(L"TWAIN DS attached (PID=%lu)", GetCurrentProcessId());
+        VSLog(L"TWAIN DS attached PID=%lu", GetCurrentProcessId());
     }
     return TRUE;
 }
 
-//=============================================================================
-// Helpers
-//=============================================================================
-static void ResetState()
-{
-    g_queue     = VS_ScanQueue();
-    g_idx       = 0;
-    g_ready     = !g_queue.empty();
-    g_readySent = false;
-    VSLog(L"Queue reloaded: %zu files", g_queue.size());
-}
-
-// Build a TW_ONEVALUE container on the heap (caller owns memory via GlobalAlloc)
-static TW_HANDLE MakeOneVal(TW_UINT16 type, TW_UINT32 item)
-{
-    TW_ONEVALUE* v = (TW_ONEVALUE*)GlobalAlloc(GPTR, sizeof(TW_ONEVALUE));
-    if (v) { v->ItemType = type; v->Item = item; }
-    return v;
-}
-static TW_HANDLE MakeFix32Val(float f)
-{
-    TW_ONEVALUE* v = (TW_ONEVALUE*)GlobalAlloc(GPTR, sizeof(TW_ONEVALUE));
-    if (v) {
-        v->ItemType = TWTY_FIX32;
-        TW_FIX32 fx; fx.Whole=(TW_INT16)f; fx.Frac=(TW_UINT16)((f-(int)f)*65536.0f);
-        memcpy(&v->Item, &fx, sizeof(TW_FIX32));
-    }
-    return v;
-}
-
-//=============================================================================
-// DG_CONTROL dispatcher
-//=============================================================================
-static TW_UINT16 Control(TW_UINT32 DAT, TW_UINT16 MSG, TW_MEMREF pData)
-{
-    //--- DAT_STATUS --------------------------------------------------------
-    if (DAT == DAT_STATUS && MSG == MSG_GET) {
-        pTW_STATUS p = (pTW_STATUS)pData;
-        p->ConditionCode = g_cc; p->Reserved = 0;
-        return TWRC_SUCCESS;
-    }
-
-    //--- DAT_IDENTITY -------------------------------------------------------
-    if (DAT == DAT_IDENTITY) {
-        auto Fill = [](pTW_IDENTITY p) {
-            p->Id                 = 1;
-            p->ProtocolMajor      = TWON_PROTOCOLMAJOR;
-            p->ProtocolMinor      = TWON_PROTOCOLMINOR;
-            p->SupportedGroups    = DG_CONTROL | DG_IMAGE;
-            p->Version.MajorNum   = 1; p->Version.MinorNum = 0;
-            p->Version.Language   = TWLG_USA; p->Version.Country = TWCY_USA;
-            strncpy_s(p->Version.Info,    "1.0",                    sizeof(p->Version.Info)-1);
-            strncpy_s(p->Manufacturer,    "VirtualScanner",         sizeof(p->Manufacturer)-1);
-            strncpy_s(p->ProductFamily,   "Virtual Scanner",        sizeof(p->ProductFamily)-1);
-            strncpy_s(p->ProductName,     "VirtualScanner ADS-4700W", sizeof(p->ProductName)-1);
-        };
-        if (MSG == MSG_GET || MSG == MSG_GETFIRST) { Fill((pTW_IDENTITY)pData); return TWRC_SUCCESS; }
-        if (MSG == MSG_GETNEXT)                    { Fill((pTW_IDENTITY)pData); return TWRC_ENDOFLIST; }
-        if (MSG == MSG_OPENDS)  { ResetState(); VSLog(L"OPENDS");  return TWRC_SUCCESS; }
-        if (MSG == MSG_CLOSEDS) { VSLog(L"CLOSEDS");               return TWRC_SUCCESS; }
-    }
-
-    //--- DAT_USERINTERFACE --------------------------------------------------
-    if (DAT == DAT_USERINTERFACE) {
-        if (MSG == MSG_ENABLEDS || MSG == MSG_ENABLEDSUIONLY) {
-            pTW_USERINTERFACE ui = (pTW_USERINTERFACE)pData;
-            g_hAppWnd = ui ? (HWND)ui->hParent : nullptr;
-            ResetState();
-            VSLog(L"ENABLEDS: %zu files queued", g_queue.size());
-            return TWRC_SUCCESS;
-        }
-        if (MSG == MSG_DISABLEDS) { VSLog(L"DISABLEDS"); return TWRC_SUCCESS; }
-    }
-
-    //--- DAT_EVENT ----------------------------------------------------------
-    if (DAT == DAT_EVENT && MSG == MSG_PROCESSEVENT) {
-        pTW_EVENT pEv = (pTW_EVENT)pData;
-        if (g_ready && !g_readySent) {
-            pEv->TWMessage = MSG_XFERREADY;
-            g_readySent    = true;
-            VSLog(L"EVENT -> MSG_XFERREADY");
-            return TWRC_DSEVENT;
-        }
-        pEv->TWMessage = MSG_NULL;
-        return TWRC_NOTDSEVENT;
-    }
-
-    //--- DAT_PENDINGXFERS ---------------------------------------------------
-    if (DAT == DAT_PENDINGXFERS) {
-        pTW_PENDINGXFERS p = (pTW_PENDINGXFERS)pData;
-        if (MSG == MSG_GET) {
-            int rem = max(0, (int)g_queue.size() - g_idx);
-            p->Count = (TW_UINT16)rem;
-            VSLog(L"PENDINGXFERS GET=%d", rem);
-            return TWRC_SUCCESS;
-        }
-        if (MSG == MSG_ENDXFER) {
-            int rem = max(0, (int)g_queue.size() - g_idx);
-            p->Count = (TW_UINT16)rem;
-            if (rem > 0) { g_ready = true; g_readySent = false; }
-            else         { g_ready = false; g_readySent = false; }
-            VSLog(L"ENDXFER rem=%d", rem);
-            return TWRC_SUCCESS;
-        }
-        if (MSG == MSG_RESET) {
-            p->Count    = 0;
-            g_idx       = (int)g_queue.size();
-            g_ready     = false;
-            g_readySent = false;
-            VSLog(L"PENDINGXFERS RESET");
-            return TWRC_SUCCESS;
-        }
-    }
-
-    //--- DAT_CAPABILITY -----------------------------------------------------
-    if (DAT == DAT_CAPABILITY) {
-        pTW_CAPABILITY cap = (pTW_CAPABILITY)pData;
-
-        // Silently accept any SET/RESET
-        if (MSG == MSG_SET || MSG == MSG_SETCONSTRAINT || MSG == MSG_RESET)
-            return TWRC_SUCCESS;
-
-        if (MSG == MSG_GET || MSG == MSG_GETCURRENT || MSG == MSG_GETDEFAULT ||
-            MSG == MSG_QUERYSUPPORT)
-        {
-            switch (cap->Cap) {
-            case CAP_XFERCOUNT:
-                cap->hContainer = MakeOneVal(TWTY_INT16, (TW_UINT32)(TW_INT16)-1);
-                cap->ConType    = TWON_ONEVALUE;
-                return TWRC_SUCCESS;
-
-            case ICAP_XFERMECH:
-                cap->hContainer = MakeOneVal(TWTY_UINT16, TWSX_NATIVE);
-                cap->ConType    = TWON_ONEVALUE;
-                return TWRC_SUCCESS;
-
-            case ICAP_PIXELTYPE:
-                cap->hContainer = MakeOneVal(TWTY_UINT16, TWPT_RGB);
-                cap->ConType    = TWON_ONEVALUE;
-                return TWRC_SUCCESS;
-
-            case ICAP_BITDEPTH:
-                cap->hContainer = MakeOneVal(TWTY_UINT16, 24);
-                cap->ConType    = TWON_ONEVALUE;
-                return TWRC_SUCCESS;
-
-            case ICAP_UNITS:
-                cap->hContainer = MakeOneVal(TWTY_UINT16, TWUN_INCHES);
-                cap->ConType    = TWON_ONEVALUE;
-                return TWRC_SUCCESS;
-
-            case ICAP_COMPRESSION:
-                cap->hContainer = MakeOneVal(TWTY_UINT16, TWCP_NONE);
-                cap->ConType    = TWON_ONEVALUE;
-                return TWRC_SUCCESS;
-
-            case ICAP_PLANARCHUNKY:
-                cap->hContainer = MakeOneVal(TWTY_UINT16, TWPC_CHUNKY);
-                cap->ConType    = TWON_ONEVALUE;
-                return TWRC_SUCCESS;
-
-            case ICAP_PIXELFLAVOR:
-                cap->hContainer = MakeOneVal(TWTY_UINT16, TWPF_CHOCOLATE);
-                cap->ConType    = TWON_ONEVALUE;
-                return TWRC_SUCCESS;
-
-            case ICAP_XRESOLUTION:
-            case ICAP_YRESOLUTION:
-            case ICAP_XNATIVERESOLUTION:
-            case ICAP_YNATIVERESOLUTION:
-                cap->hContainer = MakeFix32Val(200.0f);
-                cap->ConType    = TWON_ONEVALUE;
-                return TWRC_SUCCESS;
-
-            case ICAP_PHYSICALWIDTH:
-                cap->hContainer = MakeFix32Val(8.5f);
-                cap->ConType    = TWON_ONEVALUE;
-                return TWRC_SUCCESS;
-
-            case ICAP_PHYSICALHEIGHT:
-                cap->hContainer = MakeFix32Val(14.0f);  // legal size
-                cap->ConType    = TWON_ONEVALUE;
-                return TWRC_SUCCESS;
-
-            case ICAP_SUPPORTEDSIZES: {
-                // enumerate: NONE, A4, USLETTER
-                DWORD sz = sizeof(TW_ENUMERATION) + 2 * sizeof(TW_UINT16);
-                TW_ENUMERATION* e = (TW_ENUMERATION*)GlobalAlloc(GPTR, sz);
-                if (!e) return TWRC_FAILURE;
-                e->ItemType     = TWTY_UINT16;
-                e->NumItems     = 3;
-                e->CurrentIndex = 0;
-                e->DefaultIndex = 0;
-                TW_UINT16* items = (TW_UINT16*)e->ItemList;
-                items[0] = TWSS_NONE; items[1] = TWSS_A4; items[2] = TWSS_USLETTER;
-                cap->hContainer = e;
-                cap->ConType    = TWON_ENUMERATION;
-                return TWRC_SUCCESS;
-            }
-
-            case CAP_UICONTROLLABLE:
-                cap->hContainer = MakeOneVal(TWTY_BOOL, TRUE);
-                cap->ConType    = TWON_ONEVALUE;
-                return TWRC_SUCCESS;
-
-            case CAP_DEVICEONLINE:
-                cap->hContainer = MakeOneVal(TWTY_BOOL, TRUE);
-                cap->ConType    = TWON_ONEVALUE;
-                return TWRC_SUCCESS;
-
-            case CAP_FEEDERENABLED:
-            case CAP_FEEDERLOADED:
-                cap->hContainer = MakeOneVal(TWTY_BOOL,
-                    cap->Cap == CAP_FEEDERLOADED ? (!g_queue.empty() ? TRUE : FALSE) : FALSE);
-                cap->ConType = TWON_ONEVALUE;
-                return TWRC_SUCCESS;
-
-            case CAP_INDICATORS:
-                cap->hContainer = MakeOneVal(TWTY_BOOL, FALSE);
-                cap->ConType    = TWON_ONEVALUE;
-                return TWRC_SUCCESS;
-
-            case CAP_SUPPORTEDCAPS: {
-                static const TW_UINT16 caps[] = {
-                    CAP_XFERCOUNT, CAP_SUPPORTEDCAPS, CAP_UICONTROLLABLE,
-                    CAP_DEVICEONLINE, CAP_FEEDERENABLED, CAP_FEEDERLOADED,
-                    CAP_INDICATORS,
-                    ICAP_XFERMECH, ICAP_COMPRESSION, ICAP_PIXELTYPE,
-                    ICAP_BITDEPTH, ICAP_UNITS, ICAP_XRESOLUTION, ICAP_YRESOLUTION,
-                    ICAP_XNATIVERESOLUTION, ICAP_YNATIVERESOLUTION,
-                    ICAP_PHYSICALWIDTH, ICAP_PHYSICALHEIGHT, ICAP_SUPPORTEDSIZES,
-                    ICAP_PLANARCHUNKY, ICAP_PIXELFLAVOR
-                };
-                DWORD n = ARRAYSIZE(caps);
-                DWORD sz = sizeof(TW_ARRAY) - 1 + n * sizeof(TW_UINT16);
-                TW_ARRAY* arr = (TW_ARRAY*)GlobalAlloc(GPTR, sz);
-                if (!arr) return TWRC_FAILURE;
-                arr->ItemType = TWTY_UINT16; arr->NumItems = n;
-                memcpy(arr->ItemList, caps, n * sizeof(TW_UINT16));
-                cap->hContainer = arr; cap->ConType = TWON_ARRAY;
-                return TWRC_SUCCESS;
-            }
-            } // switch
-
-            g_cc = TWCC_CAPUNSUPPORTED;
-            return TWRC_FAILURE;
-        }
-    }
-
-    //--- DAT_SETUPMEMXFER ---------------------------------------------------
-    if (DAT == DAT_SETUPMEMXFER && MSG == MSG_GET) {
-        pTW_SETUPMEMXFER p = (pTW_SETUPMEMXFER)pData;
-        p->MinBufSize = 65536; p->MaxBufSize = 524288; p->Preferred = 65536;
-        return TWRC_SUCCESS;
-    }
-
-    // Unknown — succeed silently so DSM doesn't abort the session
-    VSLog(L"Control: unhandled DAT=0x%04x MSG=0x%04x -> TWRC_SUCCESS", DAT, MSG);
-    return TWRC_SUCCESS;
-}
-
-//=============================================================================
-// DG_IMAGE dispatcher
-//=============================================================================
-static TW_UINT16 Image(TW_UINT32 DAT, TW_UINT16 MSG, TW_MEMREF pData)
-{
-    //--- DAT_IMAGEINFO ------------------------------------------------------
-    if (DAT == DAT_IMAGEINFO && MSG == MSG_GET) {
-        pTW_IMAGEINFO p = (pTW_IMAGEINFO)pData;
-        // Read actual image dimensions if available
-        int W = 850, H = 1100;
-        if (g_idx < (int)g_queue.size()) {
-            HGLOBAL tmp = VS_LoadAsDIB(g_queue[g_idx], &W, &H);
-            if (tmp) { GlobalFree(tmp); }  // just for dimensions; real load on xfer
-        }
-        p->XResolution.Whole=200; p->XResolution.Frac=0;
-        p->YResolution.Whole=200; p->YResolution.Frac=0;
-        p->ImageWidth         = W;
-        p->ImageLength        = H;
-        p->SamplesPerPixel    = 3;
-        p->BitsPerSample[0]   = p->BitsPerSample[1] = p->BitsPerSample[2] = 8;
-        p->BitsPerPixel       = 24;
-        p->Planar             = FALSE;
-        p->PixelType          = TWPT_RGB;
-        p->Compression        = TWCP_NONE;
-        return TWRC_SUCCESS;
-    }
-
-    //--- DAT_IMAGENATIVEXFER ------------------------------------------------
-    if (DAT == DAT_IMAGENATIVEXFER && MSG == MSG_GET) {
-        VSLog(L"IMAGENATIVEXFER idx=%d / %zu", g_idx, g_queue.size());
-        if (g_idx >= (int)g_queue.size()) {
-            g_cc = TWCC_NODS; return TWRC_FAILURE;
-        }
-        HGLOBAL hDib = VS_LoadAsDIB(g_queue[g_idx]);
-        if (!hDib) { g_cc = TWCC_OPERATIONERROR; return TWRC_FAILURE; }
-
-        *(TW_HANDLE*)pData = hDib;
-        VSLog(L"Delivered image %d: %s", g_idx, g_queue[g_idx].c_str());
-        g_idx++;
-        return TWRC_XFERDONE;
-    }
-
-    //--- DAT_IMAGELAYOUT (some apps request this) ---------------------------
-    if (DAT == DAT_IMAGELAYOUT && MSG == MSG_GET) {
-        pTW_IMAGELAYOUT p = (pTW_IMAGELAYOUT)pData;
-        p->Frame.Left.Whole=0;  p->Frame.Left.Frac=0;
-        p->Frame.Top.Whole=0;   p->Frame.Top.Frac=0;
-        p->Frame.Right.Whole=8; p->Frame.Right.Frac=(TW_UINT16)(0.5f*65536);
-        p->Frame.Bottom.Whole=11; p->Frame.Bottom.Frac=0;
-        p->DocumentNumber = p->PageNumber = p->FrameNumber = 1;
-        return TWRC_SUCCESS;
-    }
-
-    VSLog(L"Image: unhandled DAT=0x%04x MSG=0x%04x -> TWRC_SUCCESS", DAT, MSG);
-    return TWRC_SUCCESS;
-}
-
-//=============================================================================
-// DS_Entry — the single exported entry point
-// Exported as ordinal @1 via .def file
-//=============================================================================
 extern "C" __declspec(dllexport)
 TW_UINT16 FAR __stdcall DS_Entry(
-    pTW_IDENTITY /*pOrigin*/,
-    pTW_IDENTITY /*pDest*/,
-    TW_UINT32    DG,
-    TW_UINT16    DAT,
-    TW_UINT16    MSG,
-    TW_MEMREF    pData)
+    pTW_IDENTITY /*origin*/,
+    pTW_IDENTITY /*dest*/,
+    TW_UINT32 DG,
+    TW_UINT16 DAT,
+    TW_UINT16 MSG,
+    TW_MEMREF pData)
 {
-    // Route by DAT first — handles DG=3 "fingerprint" probes from some DSMs
-    switch (DAT) {
-        case DAT_STATUS:
-        case DAT_IDENTITY:
-        case DAT_USERINTERFACE:
-        case DAT_EVENT:
-        case DAT_PENDINGXFERS:
-        case DAT_CAPABILITY:
-        case DAT_SETUPMEMXFER:
-        case DAT_SETUPFILEXFER:
-        case DAT_CUSTOMDSDATA:
-            return Control(DAT, MSG, pData);
-        default: break;
+    if (DG == DG_CONTROL || DAT == DAT_STATUS || DAT == DAT_IDENTITY || DAT == DAT_CAPABILITY || DAT == DAT_PENDINGXFERS || DAT == DAT_EVENT || DAT == DAT_USERINTERFACE) {
+        return HandleControl(DAT, MSG, pData);
     }
-    if (DG == DG_CONTROL) return Control(DAT, MSG, pData);
-    if (DG == DG_IMAGE)   return Image(DAT, MSG, pData);
 
-    VSLog(L"DS_Entry: unknown DG=%lu DAT=0x%04x MSG=0x%04x", DG, DAT, MSG);
+    if (DG == DG_IMAGE) {
+        return HandleImage(DAT, MSG, pData);
+    }
+
+    g_conditionCode = TWCC_SUCCESS;
     return TWRC_SUCCESS;
 }
