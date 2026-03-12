@@ -134,6 +134,9 @@ Get-Item "HKLM:\SOFTWARE\WOW6432Node\TWAIN\VirtualScanner ADS-4700W"
 Use a versão atualizada de `build_wia_only.ps1` (ela remove DLL antiga e falha corretamente no `cl`).
 Se necessário, apague manualmente `wia\VirtualScannerWIA.dll` antes de compilar.
 
+**Erro `WIA_DIP_STI_GEN_CAPS: undeclared identifier`:**
+Seu Windows SDK é mais antigo e não expõe essa constante. O código atual já possui fallback com `#ifdef`, então basta atualizar para a versão mais recente do repositório e recompilar.
+
 **Erro de compilação "wiaguid.lib not found":**
 Instale o Windows SDK (incluso no Visual Studio Installer como componente opcional
 "Windows 10 SDK" ou "Windows 11 SDK").

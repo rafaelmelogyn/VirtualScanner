@@ -276,8 +276,12 @@ HRESULT CWiaDriver::InitRootProperties(BYTE* pWiasContext)
     hr = wiasWritePropLong(pWiasContext, WIA_DIP_DEV_TYPE, StiDeviceTypeScanner);
     VSLog(L"  WIA_DIP_DEV_TYPE hr=0x%08X", hr);
 
+#ifdef WIA_DIP_STI_GEN_CAPS
     hr = wiasWritePropLong(pWiasContext, WIA_DIP_STI_GEN_CAPS, STI_GENCAP_NOTIFICATIONS);
     VSLog(L"  WIA_DIP_STI_GEN_CAPS hr=0x%08X", hr);
+#else
+    VSLog(L"  WIA_DIP_STI_GEN_CAPS not available in this SDK");
+#endif
 
     return S_OK;
 }
